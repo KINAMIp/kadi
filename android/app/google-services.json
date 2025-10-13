@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "432366397111",
+    "project_id": "kadi-45b8a",
+    "storage_bucket": "kadi-45b8a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:432366397111:android:49b213d83e9b23a2634f32",
+        "android_client_info": {
+          "package_name": "com.kinami.Kadi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCXSQs0hFy3jUHMjrlK1MIwf-rxlVKwxfY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:432366397111:android:ad88ff2511e5056c634f32",
+        "android_client_info": {
+          "package_name": "com.kinami.kadi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCXSQs0hFy3jUHMjrlK1MIwf-rxlVKwxfY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

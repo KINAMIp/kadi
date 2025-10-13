@@ -1,0 +1,98 @@
+import 'dart:math';
+
+enum Suit { clubs, diamonds, hearts, spades, joker }
+enum Rank {
+  ace, two, three, four, five, six, seven, eight, nine, ten, jack, queen, king,
+  joker,
+}
+
+extension RankLabel on Rank {
+  String get label {
+    switch (this) {
+      case Rank.ace:   return 'A';
+      case Rank.two:   return '2';
+      case Rank.three: return '3';
+      case Rank.four:  return '4';
+      case Rank.five:  return '5';
+      case Rank.six:   return '6';
+      case Rank.seven: return '7';
+      case Rank.eight: return '8';
+      case Rank.nine:  return '9';
+      case Rank.ten:   return '10';
+      case Rank.jack:  return 'J';
+      case Rank.queen: return 'Q';
+      case Rank.king:  return 'K';
+      case Rank.joker: return 'Jkr';
+    }
+  }
+}
+
+extension SuitLabel on Suit {
+  String get label {
+    switch (this) {
+      case Suit.clubs:    return 'Clubs';
+      case Suit.diamonds: return 'Diamonds';
+      case Suit.hearts:   return 'Hearts';
+      case Suit.spades:   return 'Spades';
+      case Suit.joker:    return 'Joker';
+    }
+  }
+}
+
+class KadiCard {
+  final String id;
+  final Suit suit;
+  final Rank rank;
+
+  KadiCard({
+    required this.id,
+    required this.suit,
+    required this.rank,
+  });
+
+  /// Simple helper used by UI
+  bool get isSpecial =>
+      suit == Suit.joker || rank == Rank.two || rank == Rank.ace || rank == Rank.jack;
+
+  /// Can this card be played on top of [top]?
+  bool matches(KadiCard top, {Suit? requiredSuit}) {
+    if (suit == Suit.joker || rank == Rank.joker) return true; // wild
+    if (requiredSuit != null) return suit == requiredSuit;
+    return suit == top.suit || rank == top.rank;
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'suit': suit.name,
+        'rank': rank.name,
+      };
+
+  factory KadiCard.fromJson(Map<String, dynamic> json) => KadiCard(
+        id: json['id'] as String,
+        suit: Suit.values.firstWhere((e) => e.name == json['suit']),
+        rank: Rank.values.firstWhere((e) => e.name == json['rank']),
+      );
+
+  static List<KadiCard> fullDeck({bool includeJokers = true}) {
+    final list = <KadiCard>[];
+    final rnd = Random();
+    for (final s in [Suit.clubs, Suit.diamonds, Suit.hearts, Suit.spades]) {
+      for (final r in [
+        Rank.ace, Rank.two, Rank.three, Rank.four, Rank.five, Rank.six,
+        Rank.seven, Rank.eight, Rank.nine, Rank.ten, Rank.jack, Rank.queen, Rank.king
+      ]) {
+        list.add(KadiCard(
+          id: 'c_${s.name}_${r.name}_${rnd.nextInt(1 << 32)}',
+          suit: s,
+          rank: r,
+        ));
+      }
+    }
+    if (includeJokers) {
+      list.add(KadiCard(id: 'j1_${rnd.nextInt(1 << 32)}', suit: Suit.joker, rank: Rank.joker));
+      list.add(KadiCard(id: 'j2_${rnd.nextInt(1 << 32)}', suit: Suit.joker, rank: Rank.joker));
+    }
+    list.shuffle();
+    return list;
+  }
+}

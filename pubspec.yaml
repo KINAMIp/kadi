@@ -1,0 +1,45 @@
+name: kadi
+description: A smart and fun Kadi card game built with Flutter.
+publish_to: 'none' # Remove if publishing to pub.dev
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_fonts: ^6.2.1
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.2
+  flutter_animate: ^4.5.2
+  permission_handler: ^11.4.0
+  just_audio: ^0.9.46
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  # 👇 All asset folders for images, cards, icons, etc.
+  assets:
+    - assets/cards/
+    - assets/images/
+    - assets/sounds/
+    - assets/icons/
+    # 👇 Fonts (optional — remove if not needed)
+  fonts:
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins-Regular.ttf
+        - asset: assets/fonts/Poppins-Bold.ttf
+          weight: 700
+    - family: Orbitron
+      fonts:
+        - asset: assets/fonts/Orbitron-Regular.ttf
+        - asset: assets/fonts/Orbitron-Bold.ttf
+          weight: 700
