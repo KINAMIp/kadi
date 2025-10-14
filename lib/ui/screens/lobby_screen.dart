@@ -249,7 +249,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
       ),
     );
   }
-}
 
   void _handleLogin() {
     FocusScope.of(context).unfocus();

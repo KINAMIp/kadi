@@ -10,7 +10,7 @@ import 'matchmaking_service.dart';
 /// rest of the app does not need to know about rooms, decks or rule state.
 class OnlineService {
   OnlineService._internal()
-      : _uid = 'p_${Random().nextInt(1 << 32)}';
+      : _uid = 'p_${Random().nextInt(0x7fffffff)}';
 
   static final OnlineService _instance = OnlineService._internal();
   factory OnlineService() => _instance;
@@ -87,7 +87,7 @@ class OnlineService {
     _game.drawCard(gameId, uid);
   }
 
-    void passTurn(String code) {
+  void passTurn(String code) {
     final gameId = _matchmaking.gameIdForCode(code);
     if (gameId == null) return;
     _game.passTurn(gameId, uid);
