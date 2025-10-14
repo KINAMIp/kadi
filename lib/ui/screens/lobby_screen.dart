@@ -1,7 +1,32 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-class LobbyScreen extends StatelessWidget {
+import '../../services/online_service.dart';
+import 'game_board_screen.dart';
+
+class LobbyScreen extends StatefulWidget {
   const LobbyScreen({super.key});
+
+  @override
+  State<LobbyScreen> createState() => _LobbyScreenState();
+}
+
+class _LobbyScreenState extends State<LobbyScreen> {
+  final _nicknameController = TextEditingController();
+  final _roomCodeController = TextEditingController();
+  final OnlineService _onlineService = OnlineService();
+
+  bool _isLoggedIn = false;
+  bool _creatingRoom = false;
+  bool _joiningRoom = false;
+  int _selectedSeats = 4;
+
+  @override
+  void dispose() {
+    _nicknameController.dispose();
+    _roomCodeController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,10 +68,10 @@ class LobbyScreen extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(8),
                               ),
                             ),
-                            onPressed: () {},
-                            child: const Text(
-                              "Login / Sign up",
-                              style: TextStyle(
+                            onPressed: _handleLogin,
+                            child: Text(
+                              _isLoggedIn ? "Signed in" : "Login / Sign up",
+                              style: const TextStyle(
                                   color: Colors.white, fontSize: 13),
                             ),
                           ),
@@ -82,6 +107,8 @@ class LobbyScreen extends StatelessWidget {
                     child: Column(
                       children: [
                         TextField(
+                          controller: _nicknameController,
+                          textCapitalization: TextCapitalization.words,
                           decoration: InputDecoration(
                             hintText: "Enter your nickname",
                             filled: true,
@@ -93,6 +120,37 @@ class LobbyScreen extends StatelessWidget {
                             ),
                           ),
                         ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<int>(
+                          value: _selectedSeats,
+                          decoration: InputDecoration(
+                            filled: true,
+                            fillColor: Colors.white,
+                            contentPadding:
+                                const EdgeInsets.symmetric(horizontal: 16),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                          items: List.generate(
+                            6,
+                            (index) {
+                              final value = index + 2;
+                              return DropdownMenuItem<int>(
+                                value: value,
+                                child: Text('$value seats'),
+                              );
+                            },
+                          ),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() {
+                                _selectedSeats = value;
+                              });
+                            }
+                          },
+                        ),
                         const SizedBox(height: 16),
                         ElevatedButton(
                           style: ElevatedButton.styleFrom(
@@ -102,15 +160,26 @@ class LobbyScreen extends StatelessWidget {
                               borderRadius: BorderRadius.circular(10),
                             ),
                           ),
-                          onPressed: () {},
-                          child: const Center(
-                            child: Text(
-                              "Create Room",
-                              style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold),
-                            ),
+                          onPressed:
+                              _creatingRoom ? null : () => _handleCreateRoom(),
+                          child: Center(
+                            child: _creatingRoom
+                                ? const SizedBox(
+                                    height: 20,
+                                    width: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor:
+                                          AlwaysStoppedAnimation(Colors.white),
+                                    ),
+                                  )
+                                : const Text(
+                                    "Create Room",
+                                    style: TextStyle(
+                                        fontSize: 16,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold),
+                                  ),
                           ),
                         ),
                         const SizedBox(height: 14),
@@ -120,6 +189,13 @@ class LobbyScreen extends StatelessWidget {
                                 fontWeight: FontWeight.bold)),
                         const SizedBox(height: 14),
                         TextField(
+                          controller: _roomCodeController,
+                          textCapitalization: TextCapitalization.characters,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.allow(
+                              RegExp(r'[A-Za-z0-9]'),
+                            ),
+                          ],
                           decoration: InputDecoration(
                             hintText: "Enter invitation code",
                             filled: true,
@@ -140,15 +216,26 @@ class LobbyScreen extends StatelessWidget {
                               borderRadius: BorderRadius.circular(10),
                             ),
                           ),
-                          onPressed: () {},
-                          child: const Center(
-                            child: Text(
-                              "Join Room",
-                              style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold),
-                            ),
+                          onPressed:
+                              _joiningRoom ? null : () => _handleJoinRoom(),
+                          child: Center(
+                            child: _joiningRoom
+                                ? const SizedBox(
+                                    height: 20,
+                                    width: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor:
+                                          AlwaysStoppedAnimation(Colors.white),
+                                    ),
+                                  )
+                                : const Text(
+                                    "Join Room",
+                                    style: TextStyle(
+                                        fontSize: 16,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold),
+                                  ),
                           ),
                         ),
                       ],
@@ -161,5 +248,169 @@ class LobbyScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+  void _handleLogin() {
+    FocusScope.of(context).unfocus();
+    final nickname = _nicknameController.text.trim();
+    if (nickname.isEmpty) {
+      _showSnack('Please enter your nickname first.');
+      return;
+    }
+
+    if (_isLoggedIn) {
+      _showSnack('You are already signed in as $nickname.');
+      return;
+    }
+
+    setState(() {
+      _isLoggedIn = true;
+    });
+    _showSnack('Signed in as $nickname');
+  }
+
+  Future<void> _handleCreateRoom() async {
+    FocusScope.of(context).unfocus();
+    if (!_ensureAuthenticated()) return;
+
+    setState(() {
+      _creatingRoom = true;
+    });
+
+    try {
+      final nickname = _nicknameController.text.trim();
+      final code = await _onlineService.createInviteRoom(
+        nickname: nickname,
+        seats: _selectedSeats,
+      );
+
+      if (!mounted) return;
+      await _showRoomCreatedDialog(code);
+      if (!mounted) return;
+      _roomCodeController.text = code;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => GameBoardScreen(roomCode: code),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      _showSnack('Failed to create room: ${_humanizeError(error)}');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _creatingRoom = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _handleJoinRoom() async {
+    FocusScope.of(context).unfocus();
+    if (!_ensureAuthenticated()) return;
+
+    final code = _roomCodeController.text.trim().toUpperCase();
+    if (code.length < 6) {
+      _showSnack('Enter a valid invitation code.');
+      return;
+    }
+
+    setState(() {
+      _joiningRoom = true;
+    });
+
+    try {
+      final nickname = _nicknameController.text.trim();
+      final joinedGame = await _onlineService.joinRoom(
+        code: code,
+        nickname: nickname,
+      );
+
+      if (!mounted) return;
+      if (joinedGame == null) {
+        _showSnack('Room not found or already full.');
+        return;
+      }
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => GameBoardScreen(roomCode: code),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      _showSnack('Failed to join room: ${_humanizeError(error)}');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _joiningRoom = false;
+        });
+      }
+    }
+  }
+
+  bool _ensureAuthenticated() {
+    final nickname = _nicknameController.text.trim();
+    if (nickname.isEmpty) {
+      _showSnack('Please enter your nickname first.');
+      return false;
+    }
+
+    if (!_isLoggedIn) {
+      setState(() {
+        _isLoggedIn = true;
+      });
+      _showSnack('Signed in as $nickname');
+    }
+    return true;
+  }
+
+  Future<void> _showRoomCreatedDialog(String code) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Room created'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Share this code with friends to invite them:'),
+            const SizedBox(height: 12),
+            Center(
+              child: SelectableText(
+                code,
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 3,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+  }
+
+  String _humanizeError(Object error) {
+    final message = error.toString();
+    final separatorIndex = message.indexOf(':');
+    if (separatorIndex == -1) return message;
+    return message.substring(separatorIndex + 1).trim();
   }
 }

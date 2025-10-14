@@ -85,4 +85,5 @@ class DefaultFirebaseOptions {
     storageBucket: 'kadi-45b8a.firebasestorage.app',
     measurementId: 'G-RCXZBHE6Y2',
   );
+
 }
