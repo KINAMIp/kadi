@@ -1,191 +1,104 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:math';
 
+import '../models/game_state.dart';
+import '../models/kadi_card.dart';
+import 'game_service.dart';
+import 'matchmaking_service.dart';
+
+/// High level façade used by the UI to interact with the multiplayer engine.
+/// It wraps the in-memory [GameService] with matchmaking helpers so that the
+/// rest of the app does not need to know about rooms, decks or rule state.
 class OnlineService {
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  OnlineService()
+      : _uid = 'p_${Random().nextInt(1 << 32)}';
 
-  String get uid => _auth.currentUser?.uid ?? '';
+  final GameService _game = GameService();
+  final MatchmakingService _matchmaking = MatchmakingService();
+  final String _uid;
 
-  OnlineService() {
-    // Ensure user is signed in anonymously
-    _initUser();
-  }
+  String get uid => _uid;
 
-  Future<void> _initUser() async {
-    if (_auth.currentUser == null) {
-      await _auth.signInAnonymously();
-    }
-  }
-
-  // Firestore collection reference
-  CollectionReference<Map<String, dynamic>> get rooms =>
-      _db.collection('rooms');
-
-  /// ✅ Create a new game room
-  Future<String> createRoom({required String nickname}) async {
-    await _initUser();
-
-    final roomCode = _generateRoomCode();
-    final player = {
-      'uid': uid,
-      'name': nickname,
-      'hand': [],
-    };
-
-    await rooms.doc(roomCode).set({
-      'code': roomCode,
-      'status': 'waiting',
-      'turnIndex': 0,
-      'players': [player],
-      'pile': [],
-      'winner': null,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-
-    return roomCode;
-  }
-
-  /// ✅ Join an existing room
-  Future<bool> joinRoom({required String code, required String nickname}) async {
-    await _initUser();
-
-    final ref = rooms.doc(code);
-    final snap = await ref.get();
-    if (!snap.exists) return false;
-
-    final data = snap.data()!;
-    final players = List<Map<String, dynamic>>.from(data['players']);
-
-    final alreadyJoined =
-        players.any((p) => p['uid'] == uid || p['name'] == nickname);
-    if (alreadyJoined) return true;
-
-    if (players.length >= 4) return false; // limit to 4 players
-
-    players.add({'uid': uid, 'name': nickname, 'hand': []});
-    await ref.update({'players': players});
-    return true;
-  }
-
-  /// ✅ Real-time updates of room state
-  Stream<DocumentSnapshot<Map<String, dynamic>>> watchRoom(String code) {
-    return rooms.doc(code).snapshots();
-  }
-
-  /// ✅ Play a card
-  Future<void> playCard({
-    required String code,
-    required Map<String, dynamic> card,
+  /// Create a private invite room. Returns the room code to share.
+  Future<String> createInviteRoom({
+    required String nickname,
+    required int seats,
   }) async {
-    final ref = rooms.doc(code);
-    await _db.runTransaction((tx) async {
-      final snap = await tx.get(ref);
-      if (!snap.exists) return;
-
-      final data = snap.data()!;
-      final players = List<Map<String, dynamic>>.from(data['players']);
-      final pile = List<Map<String, dynamic>>.from(data['pile']);
-      final turnIndex = data['turnIndex'] ?? 0;
-
-      final player = players[turnIndex];
-      final hand = List<Map<String, dynamic>>.from(player['hand']);
-      hand.removeWhere((c) => c['rank'] == card['rank'] && c['suit'] == card['suit']);
-      players[turnIndex]['hand'] = hand;
-
-      pile.add(card);
-
-      int nextTurn = (turnIndex + 1) % players.length;
-      String? winner;
-      String status = data['status'];
-
-      if (hand.isEmpty) {
-        status = 'over';
-        winner = player['name'];
-      }
-
-      tx.update(ref, {
-        'players': players,
-        'pile': pile,
-        'turnIndex': nextTurn,
-        'status': status,
-        'winner': winner,
-      });
-    });
-  }
-
-  /// ✅ Draw a card (adds 1 new card to player's hand)
-  Future<void> drawCard({required String code, int count = 1}) async {
-    final ref = rooms.doc(code);
-    await _db.runTransaction((tx) async {
-      final snap = await tx.get(ref);
-      if (!snap.exists) return;
-
-      final data = snap.data()!;
-      final turnIndex = data['turnIndex'] ?? 0;
-      final players = List<Map<String, dynamic>>.from(data['players']);
-      final hand = List<Map<String, dynamic>>.from(players[turnIndex]['hand']);
-
-      final newCards = _generateCards(count);
-      hand.addAll(newCards);
-      players[turnIndex]['hand'] = hand;
-
-      tx.update(ref, {'players': players});
-    });
-  }
-
-  /// ✅ Leave a room
-  Future<void> leaveRoom(String code) async {
-    final ref = rooms.doc(code);
-    await _db.runTransaction((tx) async {
-      final snap = await tx.get(ref);
-      if (!snap.exists) return;
-
-      final data = snap.data()!;
-      final players = List<Map<String, dynamic>>.from(data['players']);
-      players.removeWhere((p) => p['uid'] == uid);
-
-      if (players.isEmpty) {
-        tx.delete(ref);
-      } else {
-        tx.update(ref, {'players': players});
-      }
-    });
-  }
-
-  // 🔹 Utility: generate a random 4-letter room code
-  String _generateRoomCode() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    final rand = Random();
-    return String.fromCharCodes(
-      Iterable.generate(4, (_) => chars.codeUnitAt(rand.nextInt(chars.length))),
+    return _matchmaking.createRoom(
+      hostUid: uid,
+      hostName: nickname,
+      seats: seats,
     );
   }
 
-  // 🔹 Utility: generate random playing cards
-  List<Map<String, String>> _generateCards(int count) {
-    const suits = ['♠', '♥', '♦', '♣'];
-    const ranks = [
-      'A',
-      '2',
-      '3',
-      '4',
-      '5',
-      '6',
-      '7',
-      '8',
-      '9',
-      '10',
-      'J',
-      'Q',
-      'K'
-    ];
-    final rand = Random();
-    return List.generate(count, (_) {
-      final suit = suits[rand.nextInt(suits.length)];
-      final rank = ranks[rand.nextInt(ranks.length)];
-      return {'suit': suit, 'rank': rank};
-    });
+  /// Join an invite room by code. Returns the gameId once joined.
+  Future<String?> joinRoom({
+    required String code,
+    required String nickname,
+  }) async {
+    try {
+      return _matchmaking.joinRoom(code, uid, nickname);
+    } on StateError {
+      return null;
+    }
+  }
+
+  /// Quick matchmaking by player count. Returns the gameId.
+  Future<String> quickPlay({
+    required String nickname,
+    required int seats,
+  }) async {
+    return _matchmaking.quickPlay(uid: uid, name: nickname, seats: seats);
+  }
+
+  /// Resolve a room code into its live [GameState] stream.
+  Stream<GameState> watchRoom(String code) {
+    final gameId = _matchmaking.gameIdForCode(code);
+    if (gameId == null) {
+      return const Stream.empty();
+    }
+    return _game.watch(gameId);
+  }
+
+  GameState? getGameByCode(String code) {
+    final gameId = _matchmaking.gameIdForCode(code);
+    if (gameId == null) return null;
+    return _game.getState(gameId);
+  }
+
+  GameState? getGame(String gameId) => _game.getState(gameId);
+
+  void playCard({
+    required String code,
+    required KadiCard card,
+    Suit? chosenSuit,
+    Rank? requestedRank,
+  }) {
+    final gameId = _matchmaking.gameIdForCode(code);
+    if (gameId == null) return;
+    _game.playCard(gameId, uid, card, chosenSuit: chosenSuit, requestedRank: requestedRank);
+  }
+
+  void drawCard(String code) {
+    final gameId = _matchmaking.gameIdForCode(code);
+    if (gameId == null) return;
+    _game.drawCard(gameId, uid);
+  }
+
+  void passTurn(String code) {
+    final gameId = _matchmaking.gameIdForCode(code);
+    if (gameId == null) return;
+    _game.passTurn(gameId, uid);
+  }
+
+  void declareNikoKadi(String code) {
+    final gameId = _matchmaking.gameIdForCode(code);
+    if (gameId == null) return;
+    _game.declareNikoKadi(gameId, uid);
+  }
+
+  void leaveGame(String code) {
+    final gameId = _matchmaking.gameIdForCode(code);
+    if (gameId == null) return;
+    _game.removePlayer(gameId, uid);
   }
 }

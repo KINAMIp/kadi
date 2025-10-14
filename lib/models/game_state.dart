@@ -2,6 +2,8 @@ import 'kadi_card.dart';
 import 'kadi_player.dart';
 
 class GameState {
+  static const Object _sentinel = Object();
+
   final String id;
   final List<KadiPlayer> players;
   final List<KadiCard> drawPile;
@@ -9,7 +11,17 @@ class GameState {
   final int turnIndex;
   final String gameStatus; // waiting | playing | finished
   final DateTime createdAt;
-  final Suit? requiredSuit; // after Ace rule, null otherwise
+  final Suit? requiredSuit; // suit requested by Ace change
+  final Rank? requestedRank; // Ace of spades request
+  final Suit? questionSuit; // pending 8/Q follow-up suit
+  final int pendingDraw; // accumulated penalty cards to draw
+  final bool clockwise; // true => clockwise, false => counter
+  final int skipCount; // number of players to skip on advance
+  final int maxPlayers; // desired seats in room
+  final String? winnerUid;
+  final List<String> nikoPending; // players who must announce
+  final List<String> nikoDeclared; // players that already called Niko Kadi
+  final List<String> eventLog; // chronological description of actions
 
   GameState({
     required this.id,
@@ -20,7 +32,19 @@ class GameState {
     required this.gameStatus,
     required this.createdAt,
     this.requiredSuit,
-  });
+    this.requestedRank,
+    this.questionSuit,
+    this.pendingDraw = 0,
+    this.clockwise = true,
+    this.skipCount = 0,
+    this.maxPlayers = 2,
+    this.winnerUid,
+    List<String>? nikoPending,
+    List<String>? nikoDeclared,
+    List<String>? eventLog,
+  })  : nikoPending = nikoPending ?? const [],
+        nikoDeclared = nikoDeclared ?? const [],
+        eventLog = eventLog ?? const [];
 
   KadiCard get top => discardPile.isNotEmpty ? discardPile.last : drawPile.first;
 
@@ -32,7 +56,17 @@ class GameState {
     int? turnIndex,
     String? gameStatus,
     DateTime? createdAt,
-    Suit? requiredSuit,
+    Object? requiredSuit = _sentinel,
+    Object? requestedRank = _sentinel,
+    Object? questionSuit = _sentinel,
+    int? pendingDraw,
+    bool? clockwise,
+    int? skipCount,
+    int? maxPlayers,
+    Object? winnerUid = _sentinel,
+    List<String>? nikoPending,
+    List<String>? nikoDeclared,
+    List<String>? eventLog,
   }) =>
       GameState(
         id: id ?? this.id,
@@ -42,7 +76,25 @@ class GameState {
         turnIndex: turnIndex ?? this.turnIndex,
         gameStatus: gameStatus ?? this.gameStatus,
         createdAt: createdAt ?? this.createdAt,
-        requiredSuit: requiredSuit,
+        requiredSuit: identical(requiredSuit, _sentinel)
+            ? this.requiredSuit
+            : requiredSuit as Suit?,
+        requestedRank: identical(requestedRank, _sentinel)
+            ? this.requestedRank
+            : requestedRank as Rank?,
+        questionSuit: identical(questionSuit, _sentinel)
+            ? this.questionSuit
+            : questionSuit as Suit?,
+        pendingDraw: pendingDraw ?? this.pendingDraw,
+        clockwise: clockwise ?? this.clockwise,
+        skipCount: skipCount ?? this.skipCount,
+        maxPlayers: maxPlayers ?? this.maxPlayers,
+        winnerUid: identical(winnerUid, _sentinel)
+            ? this.winnerUid
+            : winnerUid as String?,
+        nikoPending: nikoPending ?? List<String>.from(this.nikoPending),
+        nikoDeclared: nikoDeclared ?? List<String>.from(this.nikoDeclared),
+        eventLog: eventLog ?? List<String>.from(this.eventLog),
       );
 
   Map<String, dynamic> toJson() => {
@@ -54,6 +106,16 @@ class GameState {
         'gameStatus': gameStatus,
         'createdAt': createdAt.toIso8601String(),
         'requiredSuit': requiredSuit?.name,
+        'requestedRank': requestedRank?.name,
+        'questionSuit': questionSuit?.name,
+        'pendingDraw': pendingDraw,
+        'clockwise': clockwise,
+        'skipCount': skipCount,
+        'maxPlayers': maxPlayers,
+        'winnerUid': winnerUid,
+        'nikoPending': nikoPending,
+        'nikoDeclared': nikoDeclared,
+        'eventLog': eventLog,
       };
 
   factory GameState.fromJson(Map<String, dynamic> json) => GameState(
@@ -73,5 +135,25 @@ class GameState {
         requiredSuit: (json['requiredSuit'] as String?) == null
             ? null
             : Suit.values.firstWhere((e) => e.name == json['requiredSuit']),
+        requestedRank: (json['requestedRank'] as String?) == null
+            ? null
+            : Rank.values.firstWhere((e) => e.name == json['requestedRank']),
+        questionSuit: (json['questionSuit'] as String?) == null
+            ? null
+            : Suit.values.firstWhere((e) => e.name == json['questionSuit']),
+        pendingDraw: (json['pendingDraw'] ?? 0) as int,
+        clockwise: (json['clockwise'] ?? true) as bool,
+        skipCount: (json['skipCount'] ?? 0) as int,
+        maxPlayers: (json['maxPlayers'] ?? 2) as int,
+        winnerUid: json['winnerUid'] as String?,
+        nikoPending: (json['nikoPending'] as List<dynamic>? ?? [])
+            .map((e) => e.toString())
+            .toList(),
+        nikoDeclared: (json['nikoDeclared'] as List<dynamic>? ?? [])
+            .map((e) => e.toString())
+            .toList(),
+        eventLog: (json['eventLog'] as List<dynamic>? ?? [])
+            .map((e) => e.toString())
+            .toList(),
       );
 }

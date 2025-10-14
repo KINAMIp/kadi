@@ -1,8 +1,21 @@
 import 'dart:math';
 
 enum Suit { clubs, diamonds, hearts, spades, joker }
+
 enum Rank {
-  ace, two, three, four, five, six, seven, eight, nine, ten, jack, queen, king,
+  ace,
+  two,
+  three,
+  four,
+  five,
+  six,
+  seven,
+  eight,
+  nine,
+  ten,
+  jack,
+  queen,
+  king,
   joker,
 }
 
@@ -52,7 +65,37 @@ class KadiCard {
 
   /// Simple helper used by UI
   bool get isSpecial =>
-      suit == Suit.joker || rank == Rank.two || rank == Rank.ace || rank == Rank.jack;
+      isJoker || rank == Rank.two || rank == Rank.three || rank == Rank.ace || rank == Rank.jack;
+
+  bool get isJoker => suit == Suit.joker || rank == Rank.joker;
+
+  bool get isAce => rank == Rank.ace;
+
+  bool get isAceOfSpades => isAce && suit == Suit.spades;
+
+  bool get isPenaltyCard => rank == Rank.two || rank == Rank.three || isJoker;
+
+  int get penaltyValue {
+    if (isJoker) return 5;
+    if (rank == Rank.two) return 2;
+    if (rank == Rank.three) return 3;
+    return 0;
+  }
+
+  bool get isReverse => rank == Rank.king;
+
+  bool get isSkip => rank == Rank.jack;
+
+  bool get isQuestionCard => rank == Rank.eight || rank == Rank.queen;
+
+  bool get isOrdinary =>
+      suit != Suit.joker &&
+      (rank == Rank.four ||
+          rank == Rank.five ||
+          rank == Rank.six ||
+          rank == Rank.seven ||
+          rank == Rank.nine ||
+          rank == Rank.ten);
 
   /// Can this card be played on top of [top]?
   bool matches(KadiCard top, {Suit? requiredSuit}) {
