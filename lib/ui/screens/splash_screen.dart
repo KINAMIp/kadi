@@ -112,7 +112,7 @@ class _SplashScreenState extends State<SplashScreen>
                 left: 0,
                 right: 0,
                 child: Text(
-                  © 2025  Kinami LLC. All rights reserved",
+                  "© 2025 Kinami LLC. All rights reserved.",
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.white70,
