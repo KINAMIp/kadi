@@ -147,10 +147,6 @@ class RuleEngine {
     // Advance turn index considering skip/reverse
     final n = players.length;
     int direction = dir == -1 ? -1 : 1; // applied to this move
-    // Apply reverse by flipping the sign of direction of play; we control via turn math below
-    int nextIndex = state.turnIndex;
-
-    // If we reversed, we simulate it by subtracting instead of adding.
     nextIndex = (nextIndex + direction + n) % n; // normal step
     if (skip) {
       nextIndex = (nextIndex + direction + n) % n; // skip one more
@@ -180,8 +176,7 @@ class RuleEngine {
   }
 
   /// True if 8/Q “question” is allowed now (not after a penalty stacking).
-  /// Pass in current stackedPenalty value your app tracks. For this simplified
-  /// engine, call with 0 to allow, >0 to block.
+
   static bool questionAllowed(int stackedPenalty) => stackedPenalty == 0;
 
   /// Utility: scan a hand for any legal card given the current top & required suit.

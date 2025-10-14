@@ -42,7 +42,7 @@ class MatchmakingService {
   /// UI calls: joinRoom(code, uid, name)
   Future<String> joinRoom(String code, String uid, String name) async {
     // Find room by code
-    final snap = await online.rooms.where('code', isEqualTo: code).limit(1).get();
+
     if (snap.docs.isEmpty) {
       throw StateError('Room code not found.');
     }
@@ -131,7 +131,7 @@ class MatchmakingService {
 
     // Convert to KadiPlayer
     final players = lobbyPlayers
-        .map((p) => KadiPlayer(uid: p['uid'] as String, name: p['name'] as String))
+
         .toList();
 
     // Deal

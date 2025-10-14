@@ -4,8 +4,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class OnlineService {
   final FirebaseFirestore _db;
 
-  OnlineService({FirebaseFirestore? db}) : _db = db ?? FirebaseFirestore.instance;
-
   // Collections
   CollectionReference<Map<String, dynamic>> get rooms =>
       _db.collection('rooms');
