@@ -140,3 +140,45 @@ class KadiCard {
     return list;
   }
 }
+
+/// Helper responsible for resolving card image asset paths.
+class CardAssets {
+  static const String _basePath = 'assets/cards';
+  static const Map<Rank, String> _rankAssetNames = {
+    Rank.ace: 'ace',
+    Rank.two: '2',
+    Rank.three: '3',
+    Rank.four: '4',
+    Rank.five: '5',
+    Rank.six: '6',
+    Rank.seven: '7',
+    Rank.eight: '8',
+    Rank.nine: '9',
+    Rank.ten: '10',
+    Rank.jack: 'jack',
+    Rank.queen: 'queen',
+    Rank.king: 'king',
+  };
+
+  static const List<String> _jokerVariants = ['red_joker', 'black_joker'];
+
+  static const String back = '$_basePath/back.png';
+
+  static String assetFor(KadiCard card) {
+    if (card.isJoker) {
+      return '$_basePath/${_jokerAssetFor(card)}.png';
+    }
+
+    final rankKey = _rankAssetNames[card.rank];
+    if (rankKey == null) {
+      throw StateError('No asset mapping found for rank ${card.rank}.');
+    }
+
+    return '$_basePath/${rankKey}_of_${card.suit.name}.png';
+  }
+
+  static String _jokerAssetFor(KadiCard card) {
+    final index = card.id.hashCode & 1;
+    return _jokerVariants[index % _jokerVariants.length];
+  }
+}
