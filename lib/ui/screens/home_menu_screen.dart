@@ -20,7 +20,7 @@ class HomeMenuScreen extends StatelessWidget {
                 textStyle: const TextStyle(fontSize: 20),
               ),
               onPressed: () {
-                Navigator.pushNamed(context, '/game');
+                Navigator.pushNamed(context, '/lobby');
               },
             ),
             const SizedBox(height: 20),

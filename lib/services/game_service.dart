@@ -1,167 +1,552 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:kadi/models/kadi_card.dart';
-import 'package:kadi/models/kadi_player.dart';
-import 'package:kadi/models/game_state.dart';
-import 'package:kadi/engine/rule_engine.dart';
-import 'package:kadi/services/online_service.dart';
+import 'dart:async';
+import 'dart:math';
+
+import '../engine/rule_engine.dart';
+import '../models/game_state.dart';
+import '../models/kadi_card.dart';
+import '../models/kadi_player.dart';
 
 class GameService {
-  final OnlineService online;
-  GameService({OnlineService? onlineService})
-      : online = onlineService ?? OnlineService();
+  static final GameService _instance = GameService._internal();
+  factory GameService() => _instance;
+  GameService._internal();
 
-  /// Stream live GameState for UI.
-  Stream<GameState> watchGame(String gameId) {
-    return online.gameRef(gameId).snapshots().map((snap) {
-      final data = snap.data();
-      if (data == null) {
-        throw StateError('Game not found');
-      }
-      // Coerce Firestore types into our model-friendly map
-      final json = _gameJsonFromFirestore(snap.id, data);
-      return GameState.fromJson(json);
-    });
+  final _rooms = <String, _Room>{};
+  final _controllers = <String, StreamController<GameState>>{};
+
+  Stream<GameState> watch(String gameId) {
+    _controllers.putIfAbsent(gameId, () => StreamController<GameState>.broadcast());
+    final controller = _controllers[gameId]!;
+    final room = _rooms[gameId];
+    if (room != null) {
+      Future.microtask(() => controller.add(room.state));
+    }
+    return controller.stream;
   }
 
-  /// Draw one card for [uid] if it’s their turn & they can’t play.
-  Future<void> drawCard(String gameId, String uid) async {
-    final ref = online.gameRef(gameId);
+  GameState? getState(String gameId) => _rooms[gameId]?.state;
 
-    await FirebaseFirestore.instance.runTransaction((tx) async {
-      final snap = await tx.get(ref);
-      final data = snap.data();
-      if (data == null) return;
+  GameState createGame({
+    required String id,
+    required String hostUid,
+    required String hostName,
+    required int maxPlayers,
+    bool isPublic = false,
+  }) {
+    final host = KadiPlayer(uid: hostUid, name: hostName, hand: []);
+    final state = GameState(
+      id: id,
+      players: [host],
+      drawPile: const [],
+      discardPile: const [],
+      turnIndex: 0,
+      gameStatus: 'waiting',
+      createdAt: DateTime.now(),
+      maxPlayers: maxPlayers,
+      eventLog: ['Room created by $hostName'],
+    );
+    final room = _Room(state: state, rules: const RuleState(), isPublic: isPublic);
+    _rooms[id] = room;
+    _emit(room, state);
+    return state;
+  }
 
-      final json = _gameJsonFromFirestore(snap.id, data);
-      var state = GameState.fromJson(json);
+  void addPlayer(
+    String gameId, {
+    required String uid,
+    required String name,
+  }) {
+    final room = _rooms[gameId];
+    if (room == null) return;
+    final state = room.state;
+    if (state.players.any((p) => p.uid == uid)) return;
+    if (state.players.length >= state.maxPlayers) return;
 
-      // Reshuffle if needed
-      final reshuffled =
-          RuleEngine.reshuffleIfNeeded(state.drawPile, state.discardPile);
-      var draw = reshuffled.draw;
-      var discard = reshuffled.discard;
+    final players = List<KadiPlayer>.from(state.players)
+      ..add(KadiPlayer(uid: uid, name: name, hand: []));
 
-      // Validate turn
-      final current = state.players[state.turnIndex % state.players.length];
-      if (current.uid != uid) return;
+    var updated = state.copyWith(
+      players: players,
+      eventLog: _appendLog(state.eventLog, '$name joined the room'),
+    );
 
-      // If any playable card exists, do not draw (UI should prevent).
-      final canPlayAny = RuleEngine.hasAnyPlayable(
-        current.hand,
-        discard.last,
-        requiredSuit: state.requiredSuit,
-        questionAllowed: true,
+    if (players.length >= 2 && players.length == state.maxPlayers) {
+      room.state = updated;
+      _startRound(room);
+      return;
+    }
+
+    room.state = updated;
+    _emit(room, updated);
+  }
+
+  void removePlayer(String gameId, String uid) {
+    final room = _rooms[gameId];
+    if (room == null) return;
+    final state = room.state;
+    final players = List<KadiPlayer>.from(state.players)
+      ..removeWhere((p) => p.uid == uid);
+    if (players.isEmpty) {
+      room.state = state.copyWith(
+        players: players,
+        gameStatus: 'waiting',
+        winnerUid: null,
+        eventLog: _appendLog(state.eventLog, 'All players left. Room reset'),
       );
-      if (canPlayAny) return;
+      _emit(room, room.state);
+      return;
+    }
 
-      if (draw.isEmpty) return;
-      final newCard = draw.removeAt(0);
-
-      // Give card to current player
-      final players = List<KadiPlayer>.from(state.players);
-      final idx = players.indexWhere((p) => p.uid == uid);
-      if (idx < 0) return;
-
-      final hand = List<KadiCard>.from(players[idx].hand)..add(newCard);
-      players[idx] = players[idx].copyWith(hand: hand);
-
-      state = state.copyWith(drawPile: draw, discardPile: discard, players: players);
-
-      tx.update(ref, _gameToFirestore(state));
-    });
+    room.rules = const RuleState();
+    final reset = state.copyWith(
+      players: players,
+      drawPile: const <KadiCard>[],
+      discardPile: const <KadiCard>[],
+      gameStatus: 'waiting',
+      turnIndex: 0,
+      winnerUid: null,
+      eventLog: _appendLog(state.eventLog, 'Player left the game'),
+    );
+    room.state = reset;
+    _emit(room, reset);
   }
 
-  /// Play [card] for [uid] if legal. Supports Ace suit selection via [chooseSuit].
-  Future<void> playCard(
+  void playCard(
     String gameId,
-    String uid,
+    String playerId,
     KadiCard card, {
-    Suit? chooseSuit,
-  }) async {
-    final ref = online.gameRef(gameId);
+    Suit? chosenSuit,
+    Rank? requestedRank,
+  }) {
+    final room = _rooms[gameId];
+    if (room == null) return;
+    if (room.state.gameStatus != 'playing') return;
 
-    await FirebaseFirestore.instance.runTransaction((tx) async {
-      final snap = await tx.get(ref);
-      final data = snap.data();
-      if (data == null) return;
+    final state = room.state;
+    final players = List<KadiPlayer>.from(state.players);
+    if (players.isEmpty) return;
 
-      final json = _gameJsonFromFirestore(snap.id, data);
-      var state = GameState.fromJson(json);
+    final turnPlayer = players[state.turnIndex];
+    if (turnPlayer.uid != playerId) return;
 
-      // Check turn
-      final current = state.players[state.turnIndex % state.players.length];
-      if (current.uid != uid) return;
+    final handIndex = turnPlayer.hand.indexWhere((c) => c.id == card.id);
+    if (handIndex == -1) return;
 
-      // Validate play
-      final top = state.discardPile.isNotEmpty
-          ? state.discardPile.last
-          : (state.drawPile.isNotEmpty ? state.drawPile.first : card);
+    final isSkipTarget = room.rules.skipCount > 0;
 
-      // Disallow 8/Q when (hypothetically) there is an active penalty chain.
-      final questionAllowed = true; // Adjust if you track penalties externally.
+    final validation = RuleEngine.canPlay(
+      state: room.rules,
+      card: card,
+      topCard: state.discardPile.last,
+      playerHand: turnPlayer.hand,
+      isSkipTarget: isSkipTarget,
+    );
 
-      if (!RuleEngine.canPlay(card: card, top: top, requiredSuit: state.requiredSuit)) {
-        return; // Illegal move
+    if (!validation.isValid) {
+      return;
+    }
+
+    if (card.isAce && room.rules.pendingDraw == 0) {
+      if (card.isAceOfSpades) {
+        if (requestedRank == null && chosenSuit == null) {
+          // Ace of spades must either request rank or change suit.
+          return;
+        }
+      } else {
+        if (chosenSuit == null) {
+          return;
+        }
       }
-      if (!questionAllowed &&
-          (card.rank == Rank.eight || card.rank == Rank.queen)) {
+    }
+
+    final discard = List<KadiCard>.from(state.discardPile)..add(card);
+    final drawPile = List<KadiCard>.from(state.drawPile);
+
+    final updatedHand = List<KadiCard>.from(turnPlayer.hand)..removeAt(handIndex);
+    players[state.turnIndex] = turnPlayer.copyWith(hand: updatedHand);
+
+    var rules = room.rules;
+    final nikoRequired = rules.nikoPending.contains(playerId) ||
+        rules.nikoDeclared.contains(playerId);
+    final nikoDeclared = rules.nikoDeclared.contains(playerId);
+
+    if (isSkipTarget) {
+      rules = rules.copyWith(
+        skipCount: max(0, rules.skipCount - 1),
+        skipCancelable: false,
+      );
+    }
+
+    rules = RuleEngine.applyCardEffect(
+      state: rules,
+      card: card,
+      chosenSuit: chosenSuit,
+      requestedRank: requestedRank,
+    );
+
+    final logMessage = _describePlay(turnPlayer.name, card, chosenSuit, requestedRank);
+
+    if (updatedHand.isEmpty) {
+      rules = RuleEngine.removeNikoFlags(rules, playerId);
+      room.rules = rules;
+
+      final canWin = !nikoRequired || nikoDeclared;
+
+      if (canWin) {
+        final finished = state.copyWith(
+          players: players,
+          discardPile: discard,
+          drawPile: drawPile,
+          gameStatus: 'finished',
+          winnerUid: playerId,
+        );
+        _emit(room, finished.copyWith(
+          eventLog: _appendLog(finished.eventLog, logMessage),
+        ));
+        _scheduleRestart(room);
+      } else {
+        final nextIndex = RuleEngine.nextPlayerIndex(
+          state: rules,
+          currentIndex: state.turnIndex,
+          playerCount: players.length,
+        );
+
+        final updated = state.copyWith(
+          players: players,
+          discardPile: discard,
+          drawPile: drawPile,
+          turnIndex: nextIndex,
+          winnerUid: null,
+        );
+
+        _emit(room, updated.copyWith(
+          eventLog: _appendLog(
+            updated.eventLog,
+            '$logMessage (no Niko Kadi call)',
+          ),
+        ));
+      }
+      return;
+    }
+
+    if (RuleEngine.needsNikoCall(updatedHand)) {
+      rules = RuleEngine.markNikoPending(rules, playerId);
+    } else {
+      rules = RuleEngine.removeNikoFlags(rules, playerId);
+    }
+
+    final nextIndex = RuleEngine.nextPlayerIndex(
+      state: rules,
+      currentIndex: state.turnIndex,
+      playerCount: players.length,
+    );
+
+    room.rules = rules;
+
+    final updated = state.copyWith(
+      players: players,
+      discardPile: discard,
+      drawPile: drawPile,
+      turnIndex: nextIndex,
+    );
+
+    _emit(room, updated.copyWith(
+      eventLog: _appendLog(updated.eventLog, logMessage),
+    ));
+  }
+
+  void drawCard(String gameId, String playerId) {
+    final room = _rooms[gameId];
+    if (room == null) return;
+    if (room.state.gameStatus != 'playing') return;
+
+    final state = room.state;
+    final players = List<KadiPlayer>.from(state.players);
+    if (players.isEmpty) return;
+
+    final turnPlayer = players[state.turnIndex];
+    if (turnPlayer.uid != playerId) return;
+
+    if (room.rules.skipCount > 0 && room.rules.skipCancelable) {
+      passTurn(gameId, playerId);
+      return;
+    }
+
+    final drawCount = room.rules.pendingDraw > 0
+        ? room.rules.pendingDraw
+        : 1;
+
+    final drawResult = _drawCards(state.drawPile, state.discardPile, drawCount);
+    final newHand = List<KadiCard>.from(turnPlayer.hand)..addAll(drawResult.drawn);
+    players[state.turnIndex] = turnPlayer.copyWith(hand: newHand);
+
+    var rules = room.rules;
+
+    String message;
+    if (room.rules.pendingDraw > 0) {
+      message = '${turnPlayer.name} drew ${drawResult.drawn.length} penalty cards';
+      rules = rules.copyWith(
+        pendingDraw: 0,
+        skipCancelable: false,
+        clearForcedSuit: true,
+        clearRequestedRank: true,
+      );
+    } else if (room.rules.questionSuit != null) {
+      message = '${turnPlayer.name} failed the question and drew a card';
+      rules = rules.copyWith(clearQuestionSuit: true, skipCancelable: false);
+    } else {
+      message = '${turnPlayer.name} drew a card';
+    }
+
+    rules = RuleEngine.cancelRequestedRankIfImpossible(
+      state: rules,
+      playerHand: newHand,
+    );
+
+    if (RuleEngine.needsNikoCall(newHand)) {
+      rules = RuleEngine.markNikoPending(rules, playerId);
+    } else {
+      rules = RuleEngine.removeNikoFlags(rules, playerId);
+    }
+
+    room.rules = rules;
+
+    final updated = state.copyWith(
+      players: players,
+      drawPile: drawResult.drawPile,
+      discardPile: drawResult.discardPile,
+    );
+
+    _emit(room, updated.copyWith(
+      eventLog: _appendLog(updated.eventLog, message),
+    ));
+
+    if (room.rules.pendingDraw == 0 && room.rules.questionSuit == null) {
+      passTurn(gameId, playerId);
+    }
+  }
+
+  void passTurn(String gameId, String playerId) {
+    final room = _rooms[gameId];
+    if (room == null) return;
+    if (room.state.gameStatus != 'playing') return;
+
+    final state = room.state;
+    final players = List<KadiPlayer>.from(state.players);
+    if (players.isEmpty) return;
+
+    final turnPlayer = players[state.turnIndex];
+    if (turnPlayer.uid != playerId) return;
+
+    var rules = room.rules;
+    if (rules.skipCount > 0) {
+      rules = RuleEngine.clearAfterSkipResolution(rules);
+    }
+
+    final nextIndex = RuleEngine.nextPlayerIndex(
+      state: rules,
+      currentIndex: state.turnIndex,
+      playerCount: players.length,
+    );
+
+    room.rules = rules;
+
+    final updated = state.copyWith(turnIndex: nextIndex);
+    _emit(room, updated.copyWith(
+      eventLog: _appendLog(updated.eventLog, '${turnPlayer.name} passed'),
+    ));
+  }
+
+  void declareNikoKadi(String gameId, String playerId) {
+    final room = _rooms[gameId];
+    if (room == null) return;
+    if (room.state.gameStatus != 'playing') return;
+
+    if (!room.rules.nikoPending.contains(playerId)) return;
+
+    room.rules = RuleEngine.markNikoDeclared(room.rules, playerId);
+
+    final player = room.state.players.firstWhere((p) => p.uid == playerId, orElse: () =>
+        KadiPlayer(uid: playerId, name: 'Player', hand: const []));
+
+    _emit(
+      room,
+      room.state.copyWith(
+        eventLog: _appendLog(
+          room.state.eventLog,
+          '${player.name} called Niko Kadi!',
+        ),
+      ),
+    );
+  }
+
+  void _startRound(_Room room) {
+    if (room.state.players.length < 2) {
+      return;
+    }
+
+    final rnd = Random();
+    final deck = KadiCard.fullDeck();
+
+    final players = room.state.players
+        .map((p) => p.copyWith(hand: []))
+        .toList()
+      ..shuffle(rnd);
+
+    for (var i = 0; i < players.length; i++) {
+      final hand = <KadiCard>[];
+      for (var j = 0; j < 4; j++) {
+        hand.add(deck.removeLast());
+      }
+      players[i] = players[i].copyWith(hand: hand);
+    }
+
+    var starterIndex = deck.lastIndexWhere((c) => c.isOrdinary);
+    if (starterIndex < 0) {
+      starterIndex = deck.length - 1;
+    }
+    final starter = deck.removeAt(starterIndex);
+    final discard = <KadiCard>[starter];
+
+    final turnIndex = rnd.nextInt(players.length);
+
+    room.rules = const RuleState();
+    room.rules = room.rules.copyWith(clockwise: true);
+
+    final started = room.state.copyWith(
+      players: players,
+      drawPile: deck,
+      discardPile: discard,
+      turnIndex: turnIndex,
+      gameStatus: 'playing',
+      winnerUid: null,
+      eventLog: _appendLog(
+        room.state.eventLog,
+        'Round started. ${players[turnIndex].name} begins with ${starter.rank.label} of ${starter.suit.label}.',
+      ),
+    );
+
+    room.autoRestartScheduled = false;
+    _emit(room, started);
+  }
+
+  void _scheduleRestart(_Room room) {
+    if (room.autoRestartScheduled) return;
+    room.autoRestartScheduled = true;
+    Future.delayed(const Duration(seconds: 3), () {
+      if (!_rooms.containsKey(room.state.id)) return;
+      if (room.state.players.length < 2) {
+        final waiting = room.state.copyWith(
+          gameStatus: 'waiting',
+          eventLog: _appendLog(room.state.eventLog, 'Waiting for more players'),
+        );
+        room.rules = const RuleState();
+        room.autoRestartScheduled = false;
+        _emit(room, waiting);
         return;
       }
-
-      // Apply effects & advance turn
-      state = RuleEngine.applyPlay(
-        state: state,
-        byUid: uid,
-        card: card,
-        chooseSuit: chooseSuit,
-      );
-
-      tx.update(ref, _gameToFirestore(state));
+      _startRound(room);
     });
   }
 
-  // ---------- Helpers to map Firestore <-> model ----------
-
-  Map<String, dynamic> _gameToFirestore(GameState s) {
-    // Convert DateTime to Timestamp and enums to strings (already done by toJson)
-    final base = s.toJson();
-    return {
-      ...base,
-      'createdAt': FieldValue.serverTimestamp(), // keep server authority
-    };
+  void _emit(_Room room, GameState state) {
+    final synced = state.copyWith(
+      requiredSuit: room.rules.forcedSuit,
+      requestedRank: room.rules.requestedRank,
+      questionSuit: room.rules.questionSuit,
+      pendingDraw: room.rules.pendingDraw,
+      clockwise: room.rules.clockwise,
+      skipCount: room.rules.skipCount,
+      nikoPending: room.rules.nikoPending.toList(),
+      nikoDeclared: room.rules.nikoDeclared.toList(),
+    );
+    room.state = synced;
+    _controllers.putIfAbsent(synced.id, () => StreamController<GameState>.broadcast());
+    _controllers[synced.id]!.add(synced);
   }
 
-  Map<String, dynamic> _gameJsonFromFirestore(
-    String id,
-    Map<String, dynamic> data,
+  _DrawResult _drawCards(
+    List<KadiCard> drawPile,
+    List<KadiCard> discardPile,
+    int count,
   ) {
-    // Convert Firestore types back to our model format
-    final players = (data['players'] as List? ?? [])
-        .map((e) => Map<String, dynamic>.from(e as Map))
-        .toList();
+    final draw = List<KadiCard>.from(drawPile);
+    final discard = List<KadiCard>.from(discardPile);
+    final drawn = <KadiCard>[];
 
-    final draw = (data['drawPile'] as List? ?? [])
-        .map((e) => Map<String, dynamic>.from(e as Map))
-        .toList();
+    for (var i = 0; i < count; i++) {
+      if (draw.isEmpty) {
+        if (discard.length <= 1) {
+          break;
+        }
+        final top = discard.removeLast();
+        draw.addAll(discard);
+        draw.shuffle();
+        discard
+          ..clear()
+          ..add(top);
+      }
+      drawn.add(draw.removeLast());
+    }
 
-    final discard = (data['discardPile'] as List? ?? [])
-        .map((e) => Map<String, dynamic>.from(e as Map))
-        .toList();
-
-    final createdAt = data['createdAt'];
-    String? requiredSuit = data['requiredSuit'] as String?;
-
-    return {
-      'id': id,
-      'players': players,
-      'drawPile': draw,
-      'discardPile': discard,
-      'turnIndex': (data['turnIndex'] ?? 0) as int,
-      'gameStatus': (data['gameStatus'] ?? 'playing') as String,
-      'createdAt': createdAt is Timestamp
-          ? createdAt.toDate().toIso8601String()
-          : DateTime.now().toIso8601String(),
-      'requiredSuit': requiredSuit,
-    };
+    return _DrawResult(drawPile: draw, discardPile: discard, drawn: drawn);
   }
+
+  List<String> _appendLog(List<String> current, String entry) {
+    final updated = List<String>.from(current)..add(entry);
+    if (updated.length > 30) {
+      updated.removeRange(0, updated.length - 30);
+    }
+    return updated;
+  }
+
+  String _describePlay(String playerName, KadiCard card, Suit? chosenSuit, Rank? requestedRank) {
+    final buffer = StringBuffer('$playerName played ${card.rank.label} of ${card.suit.label}');
+    if (card.isAce && chosenSuit != null && card.isAceOfSpades == false) {
+      buffer.write(' choosing ${chosenSuit.label}');
+    }
+    if (card.isAceOfSpades && requestedRank != null) {
+      buffer.write(' requesting ${requestedRank.label}');
+    }
+    if (card.isPenaltyCard) {
+      buffer.write(' (penalty +${card.penaltyValue})');
+    }
+    if (card.rank == Rank.jack) {
+      buffer.write(' (jump)');
+    }
+    if (card.rank == Rank.king) {
+      buffer.write(' (reverse)');
+    }
+    if (card.isQuestionCard) {
+      buffer.write(' (question)');
+    }
+    return buffer.toString();
+  }
+
+  String randomId() => 'g_${Random().nextInt(1 << 32)}';
+}
+
+class _Room {
+  _Room({
+    required this.state,
+    required this.rules,
+    required this.isPublic,
+  });
+
+  GameState state;
+  RuleState rules;
+  final bool isPublic;
+  bool autoRestartScheduled = false;
+}
+
+class _DrawResult {
+  _DrawResult({
+    required this.drawPile,
+    required this.discardPile,
+    required this.drawn,
+  });
+
+  final List<KadiCard> drawPile;
+  final List<KadiCard> discardPile;
+  final List<KadiCard> drawn;
 }

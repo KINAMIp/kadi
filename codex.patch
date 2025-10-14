@@ -1,0 +1,3206 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/lib/engine/kadi_engine.dart b/lib/engine/kadi_engine.dart
+deleted file mode 100644
+index 09cd4c28dcfd02adb95aeab84666b0b4357eead6..0000000000000000000000000000000000000000
+--- a/lib/engine/kadi_engine.dart
++++ /dev/null
+@@ -1,105 +0,0 @@
+-import 'dart:math';
+-import '../models/kadi_card.dart';
+-import '../models/kadi_player.dart';
+-import 'rule_engine.dart';
+-import '../services/audio_service.dart';
+-
+-class KadiGameEngine {
+-  final List<KadiPlayer> players;
+-  final List<KadiCard> deck = [];
+-  final List<KadiCard> discardPile = [];
+-  final AudioService _audio = AudioService();
+-
+-  int currentPlayerIndex = 0;
+-  bool reverseOrder = false;
+-  bool gameOver = false;
+-  Suit? requiredSuit;
+-  int stackedPenalty = 0;
+-
+-  KadiGameEngine(this.players);
+-
+-  void initializeGame() {
+-    _createDeck();
+-    _shuffleDeck();
+-    _dealCards();
+-    final KadiCard first = deck.removeLast();
+-    discardPile.add(first);
+-    requiredSuit = first.suit;
+-    _audio.playShuffle();
+-  }
+-
+-  void _createDeck() {
+-    for (final suit in Suit.values) {
+-      if (suit == Suit.none) continue;
+-      for (final rank in Rank.values) {
+-        if (rank == Rank.none) continue;
+-        deck.add(KadiCard(suit, rank));
+-      }
+-    }
+-  }
+-
+-  void _shuffleDeck() => deck.shuffle(Random());
+-
+-  void _dealCards() {
+-    for (final player in players) {
+-      for (int i = 0; i < 5; i++) {
+-        player.drawCard(deck.removeLast());
+-      }
+-    }
+-  }
+-
+-  void playCard(KadiPlayer player, KadiCard card) {
+-    if (gameOver || player != currentPlayer) return;
+-
+-    final top = discardPile.last;
+-    if (!RuleEngine.canPlay(card, top, requiredSuit)) return;
+-
+-    player.playCard(card);
+-    discardPile.add(card);
+-    _audio.playCard();
+-
+-    final newState = RuleEngine.applyCardEffect(
+-      card,
+-      RuleState(
+-        requiredSuit: requiredSuit,
+-        stackedPenalty: stackedPenalty,
+-        reverseOrder: reverseOrder,
+-      ),
+-    );
+-
+-    requiredSuit = newState.requiredSuit;
+-    stackedPenalty = newState.stackedPenalty;
+-    reverseOrder = newState.reverseOrder;
+-
+-    if (player.hasWon) {
+-      gameOver = true;
+-      _audio.playWin();
+-    } else {
+-      nextTurn();
+-    }
+-  }
+-
+-  void nextTurn() {
+-    currentPlayerIndex = reverseOrder
+-        ? (currentPlayerIndex - 1 + players.length) % players.length
+-        : (currentPlayerIndex + 1) % players.length;
+-  }
+-
+-  void drawCard(KadiPlayer player) {
+-    if (deck.isEmpty) _reshuffle();
+-    final card = deck.removeLast();
+-    player.drawCard(card);
+-    _audio.playDraw();
+-  }
+-
+-  void _reshuffle() {
+-    final top = discardPile.removeLast();
+-    deck.addAll(discardPile);
+-    discardPile.clear();
+-    discardPile.add(top);
+-    deck.shuffle();
+-  }
+-
+-  KadiPlayer get currentPlayer => players[currentPlayerIndex];
+-  KadiCard get topCard => discardPile.last;
+-}
+\ No newline at end of file
+diff --git a/lib/engine/rule_engine.dart b/lib/engine/rule_engine.dart
+index cb80522e3162b73cbca5307d9187e1c5372f6639..8feb09691988b7660091942e619d87f8ff64ab4a 100644
+--- a/lib/engine/rule_engine.dart
++++ b/lib/engine/rule_engine.dart
+@@ -1,46 +1,336 @@
++import 'package:collection/collection.dart';
++
+ import '../models/kadi_card.dart';
+ 
++class RuleValidationResult {
++  final bool isValid;
++  final String? reason;
++
++  const RuleValidationResult.valid() : this._(true, null);
++  const RuleValidationResult.invalid(String message) : this._(false, message);
++
++  const RuleValidationResult._(this.isValid, this.reason);
++}
++
+ class RuleState {
+-  final Suit? requiredSuit;
+-  final int stackedPenalty;
+-  final bool reverseOrder;
++  final Suit? forcedSuit;
++  final Rank? requestedRank;
++  final Suit? questionSuit;
++  final int pendingDraw;
++  final bool clockwise;
++  final int skipCount;
++  final bool skipCancelable;
++  final Set<String> nikoPending;
++  final Set<String> nikoDeclared;
+ 
+-  RuleState({
+-    this.requiredSuit,
+-    this.stackedPenalty = 0,
+-    this.reverseOrder = false,
+-  });
++  const RuleState({
++    this.forcedSuit,
++    this.requestedRank,
++    this.questionSuit,
++    this.pendingDraw = 0,
++    this.clockwise = true,
++    this.skipCount = 0,
++    this.skipCancelable = false,
++    Set<String>? nikoPending,
++    Set<String>? nikoDeclared,
++  })  : nikoPending = nikoPending ?? const <String>{},
++        nikoDeclared = nikoDeclared ?? const <String>{};
+ 
+   RuleState copyWith({
+-    Suit? requiredSuit,
+-    int? stackedPenalty,
+-    bool? reverseOrder,
++    Suit? forcedSuit,
++    bool clearForcedSuit = false,
++    Rank? requestedRank,
++    bool clearRequestedRank = false,
++    Suit? questionSuit,
++    bool clearQuestionSuit = false,
++    int? pendingDraw,
++    bool? clockwise,
++    int? skipCount,
++    bool? skipCancelable,
++    Set<String>? nikoPending,
++    Set<String>? nikoDeclared,
+   }) {
+     return RuleState(
+-      requiredSuit: requiredSuit ?? this.requiredSuit,
+-      stackedPenalty: stackedPenalty ?? this.stackedPenalty,
+-      reverseOrder: reverseOrder ?? this.reverseOrder,
++      forcedSuit: clearForcedSuit
++          ? null
++          : (forcedSuit ?? this.forcedSuit),
++      requestedRank: clearRequestedRank
++          ? null
++          : (requestedRank ?? this.requestedRank),
++      questionSuit: clearQuestionSuit
++          ? null
++          : (questionSuit ?? this.questionSuit),
++      pendingDraw: pendingDraw ?? this.pendingDraw,
++      clockwise: clockwise ?? this.clockwise,
++      skipCount: skipCount ?? this.skipCount,
++      skipCancelable: skipCancelable ?? this.skipCancelable,
++      nikoPending: nikoPending ?? this.nikoPending,
++      nikoDeclared: nikoDeclared ?? this.nikoDeclared,
+     );
+   }
++
++  RuleState toggleDirection() => copyWith(clockwise: !clockwise);
++
++  Map<String, dynamic> toDebugJson() => {
++        'forcedSuit': forcedSuit?.name,
++        'requestedRank': requestedRank?.name,
++        'questionSuit': questionSuit?.name,
++        'pendingDraw': pendingDraw,
++        'clockwise': clockwise,
++        'skipCount': skipCount,
++        'skipCancelable': skipCancelable,
++        'nikoPending': nikoPending.toList(),
++        'nikoDeclared': nikoDeclared.toList(),
++      };
+ }
+ 
+ class RuleEngine {
+-  static bool canPlay(KadiCard card, KadiCard top, Suit? requiredSuit) {
+-    if (requiredSuit != null && card.suit == requiredSuit) return true;
+-    return card.rank == top.rank || card.suit == top.suit || card.isAce;
+-  }
+-
+-  static RuleState applyCardEffect(KadiCard card, RuleState state) {
+-    if (card.isReverse) {
+-      return state.copyWith(reverseOrder: !state.reverseOrder);
+-    } else if (card.isSkip) {
+-      return state.copyWith();
+-    } else if (card.isPenalty) {
+-      return state.copyWith(stackedPenalty: state.stackedPenalty + 2);
+-    } else if (card.isAce) {
+-      // Normally you'd prompt for new suit
+-      return state.copyWith(requiredSuit: Suit.spades);
++  /// Validates whether [card] may be played given [state] and current [topCard].
++  static RuleValidationResult canPlay({
++    required RuleState state,
++    required KadiCard card,
++    required KadiCard topCard,
++    required List<KadiCard> playerHand,
++    bool isSkipTarget = false,
++  }) {
++    // If a penalty is pending the only valid actions are stacking penalty or
++    // canceling with an Ace.
++    if (state.pendingDraw > 0) {
++      if (card.isPenaltyCard) {
++        return const RuleValidationResult.valid();
++      }
++      if (card.isAce) {
++        return const RuleValidationResult.valid();
++      }
++      return const RuleValidationResult.invalid(
++        'A penalty is active – you must stack a penalty card or cancel with an Ace.',
++      );
++    }
++
++    // Question follow-up: must play matching suit and ordinary number.
++    if (state.questionSuit != null) {
++      if (card.suit != state.questionSuit) {
++        return RuleValidationResult.invalid(
++          'You must answer the question with a ${state.questionSuit!.name} card.',
++        );
++      }
++      if (_isQuestionResponseForbidden(card)) {
++        return const RuleValidationResult.invalid(
++          'Question cards can only be answered with ordinary numbers (4-10 except specials).',
++        );
++      }
++      return const RuleValidationResult.valid();
++    }
++
++    // Jack skip window: only another Jack can be played by the skip target
++    // before the skip resolves.
++    if (state.skipCount > 0 && state.skipCancelable && isSkipTarget) {
++      if (card.rank != Rank.jack) {
++        return const RuleValidationResult.invalid(
++          'Only a Jack can counter a jump.',
++        );
++      }
++      return const RuleValidationResult.valid();
++    }
++
++    // Suit forced by Ace change.
++    if (state.forcedSuit != null && card.suit != state.forcedSuit && !card.isJoker) {
++      return RuleValidationResult.invalid(
++        'Suit forced to ${state.forcedSuit!.label}.',
++      );
++    }
++
++    // Ace of spades request.
++    if (state.requestedRank != null) {
++      final hasRequested =
++          playerHand.any((c) => c.rank == state.requestedRank && !c.isJoker);
++      if (hasRequested && card.rank != state.requestedRank) {
++        return RuleValidationResult.invalid(
++          'You were asked for ${state.requestedRank!.label}.',
++        );
++      }
++      if (card.rank == state.requestedRank) {
++        return const RuleValidationResult.valid();
++      }
++      // If player does not hold requested rank fall back to normal matching.
++    }
++
++    if (card.isJoker) {
++      return const RuleValidationResult.valid();
++    }
++
++    if (card.rank == topCard.rank || card.suit == topCard.suit) {
++      return const RuleValidationResult.valid();
++    }
++
++    // Allow Ace to be played at any time to change suit or cancel.
++    if (card.isAce) {
++      return const RuleValidationResult.valid();
++    }
++
++    return RuleValidationResult.invalid(
++      'Card must match suit or rank.',
++    );
++  }
++
++  /// Applies card effects and returns an updated [RuleState].
++  static RuleState applyCardEffect({
++    required RuleState state,
++    required KadiCard card,
++    Suit? chosenSuit,
++    Rank? requestedRank,
++  }) {
++    RuleState result = state;
++
++    // Clear transient requirements when appropriate.
++    if (state.forcedSuit != null && card.suit == state.forcedSuit) {
++      result = result.copyWith(clearForcedSuit: true);
++    }
++    if (state.requestedRank != null && card.rank == state.requestedRank) {
++      result = result.copyWith(clearRequestedRank: true);
++    }
++    if (state.questionSuit != null && card.suit == state.questionSuit) {
++      result = result.copyWith(clearQuestionSuit: true);
++    }
++
++    if (card.isJoker) {
++      result = result.copyWith(
++        pendingDraw: state.pendingDraw + card.penaltyValue,
++        skipCancelable: false,
++      );
++      return result;
++    }
++
++    if (card.rank == Rank.two || card.rank == Rank.three) {
++      result = result.copyWith(
++        pendingDraw: state.pendingDraw + card.penaltyValue,
++        skipCancelable: false,
++      );
++      return result;
++    }
++
++    if (card.isAce) {
++      if (state.pendingDraw > 0) {
++        result = result.copyWith(
++          pendingDraw: 0,
++          clearForcedSuit: true,
++          clearRequestedRank: true,
++          skipCancelable: false,
++        );
++        return result;
++      }
++      if (card.isAceOfSpades && requestedRank != null) {
++        result = result.copyWith(
++          requestedRank: requestedRank,
++          skipCancelable: false,
++        );
++        return result;
++      }
++      if (chosenSuit != null) {
++        result = result.copyWith(
++          forcedSuit: chosenSuit,
++          skipCancelable: false,
++        );
++      }
++      return result;
++    }
++
++    if (card.rank == Rank.jack) {
++      return result.copyWith(
++        skipCount: state.skipCount + 1,
++        skipCancelable: true,
++        clearQuestionSuit: true,
++      );
++    }
++
++    if (card.rank == Rank.king) {
++      return result.toggleDirection().copyWith(skipCancelable: false);
++    }
++
++    if (card.isQuestionCard) {
++      return result.copyWith(
++        questionSuit: card.suit,
++        skipCancelable: false,
++      );
++    }
++
++    // Ordinary card clears skip cancel window.
++    return result.copyWith(skipCancelable: false);
++  }
++
++  static int nextPlayerIndex({
++    required RuleState state,
++    required int currentIndex,
++    required int playerCount,
++  }) {
++    if (playerCount == 0) return 0;
++    final direction = state.clockwise ? 1 : -1;
++    var next = (currentIndex + direction) % playerCount;
++    if (next < 0) {
++      next += playerCount;
++    }
++    return next;
++  }
++
++  static bool needsNikoCall(List<KadiCard> hand) {
++    if (hand.length != 1) return false;
++    return hand.first.isOrdinary;
++  }
++
++  static bool _isQuestionResponseForbidden(KadiCard card) {
++    if (card.isJoker) return true;
++    if (card.rank == Rank.two || card.rank == Rank.three) return true;
++    if (card.rank == Rank.ace || card.rank == Rank.jack || card.rank == Rank.queen ||
++        card.rank == Rank.king) {
++      return true;
++    }
++    return false;
++  }
++
++  static RuleState clearAfterSkipResolution(RuleState state) {
++    if (state.skipCount <= 0) {
++      return state.copyWith(skipCancelable: false);
++    }
++    return state.copyWith(skipCount: state.skipCount - 1, skipCancelable: false);
++  }
++
++  static RuleState cancelRequestedRankIfImpossible({
++    required RuleState state,
++    required List<KadiCard> playerHand,
++  }) {
++    if (state.requestedRank == null) return state;
++    final hasRank = playerHand.any((c) => c.rank == state.requestedRank && !c.isJoker);
++    if (!hasRank) {
++      return state.copyWith(clearRequestedRank: true);
++    }
++    return state;
++  }
++
++  static RuleState resetQuestionIfInvalid({
++    required RuleState state,
++    required bool playedValidResponse,
++  }) {
++    if (!playedValidResponse && state.questionSuit != null) {
++      return state.copyWith(clearQuestionSuit: true);
+     }
+     return state;
+   }
+-}
+\ No newline at end of file
++
++  static RuleState removeNikoFlags(RuleState state, String playerId) {
++    final pending = state.nikoPending.whereNot((id) => id == playerId).toSet();
++    final declared = state.nikoDeclared.whereNot((id) => id == playerId).toSet();
++    return state.copyWith(nikoPending: pending, nikoDeclared: declared);
++  }
++
++  static RuleState markNikoPending(RuleState state, String playerId) {
++    final pending = state.nikoPending.toSet()..add(playerId);
++    final declared = state.nikoDeclared.whereNot((id) => id == playerId).toSet();
++    return state.copyWith(nikoPending: pending, nikoDeclared: declared);
++  }
++
++  static RuleState markNikoDeclared(RuleState state, String playerId) {
++    final pending = state.nikoPending.whereNot((id) => id == playerId).toSet();
++    final declared = state.nikoDeclared.toSet()..add(playerId);
++    return state.copyWith(nikoPending: pending, nikoDeclared: declared);
++  }
++}
+diff --git a/lib/lib_structure.txt b/lib/lib_structure.txt
+index 870cde4cc3b4d87a1e6c7a4b439e7e328e3828bd..fe6c26374346699ea556ceaed0553aac872aef36 100644
+GIT binary patch
+literal 805
+zcmZuvTav>d4EygXxB%NDF;4I%o)VKWke%LsO=#NY@fj(yC7D3o{bmjFK#cdBG1f>4
+z=o;|jL9)_Q^cYg32bj>M3>h0+B@giAdJunr<^WHWZAwB}sK?hFD4wEwVIN%^-~Rld
+z6XbrJ;6Xf`C6R-gKjX7tLhdh^C903Tz?woWVCn^tSC=*0YN(4E&NXIpRmm}G85453
+z;6m)W=LMd$l{6j*YyQX&nBQw_o33HIg}_&EExLAdQfaJA+v$Kwi=@bD8);1+LzLY&
+z>v1`MK`0W%jk-B($E?|PWh}W(+S#u|nX#{%)|XP!A&E7f(&}|4eQf)fugb@A3~Eh#
+rPYxEyASapLd!eYyPAycsxd^*V6Yho9{E}b?30<7Oy3t1u#4X)FTuTiI
+
+literal 2562
+zcmbVOO;3YR5Ztqg|AD({W4!6jG#ZZ{j3<+ZFH0i@0<_x1->%NQ*9{K?6bP|k*_qv)
+z{doQTd6ZmIi6oX%Jb9LTd66ePrLvVuYJ6t0kxRLdS7W)C9c(?kBVsE)EIrup`{2Yv
+zq$fA>V6KH+%SvwXN0yb`$<jQ1!-m&8SV|xRaFKNlKZWs}gSUcpgf}I=Azo38FMus$
+zEa5%GeQ$V{c>4Nhy#oU?>E<Hul`PB^n|x^-xBS^yJ^27r1g<sSQyFX7&8ry3mzvDR
+zW89c_P=pmqk*%wN@`pyB2r)I5!x3$OU>&V~KGcePv{4^T-s)}GLt|ecZeNb@P@eJO
+zT8_`fRmyhd0aXd%uUjo2)nEm4lRcwS`{9gS&BmkHc{QR*ptq0ivGYXT$8&HF*zfGg
+zX~@D%1bt;jk!k1yG_p!g!?_jNgTd`towEw@aOxRZyG}ac+Ifxc0pj5%V5htI?z;8!
+zOvfhhZ0Cia+;(#!NWl`|I?h5@*ovH_3cWPPyIX~~)3*CWbs}uB7(Lpqf~v1~o%*%7
+zm~Q12qxS?+XQpb?vF%>sdDOQB>0@iAj8;QuhsM?9#O)elI*0QKPpq}cr#@rN`7VJd
+zQ7u(~r@*-_Xt!mK9y{lO+Vodav(&qdo;!qRrB#T1#B6wWR*18|KFXqZZcxsV&SQc9
+z?HM<oqnYf)?Bpr_RnaM!_W9yt?=y2|Fo#7qd85Jj%<W$0xx+eB`8h217f%K>>&eYD
+IEfe<7A8<x_djJ3c
+
+diff --git a/lib/models/card_model.dart b/lib/models/card_model.dart
+deleted file mode 100644
+index 2b0d6dd1c179fd18c420990784f4c6a312ee255c..0000000000000000000000000000000000000000
+--- a/lib/models/card_model.dart
++++ /dev/null
+@@ -1,71 +0,0 @@
+-enum Suit { hearts, diamonds, clubs, spades, joker }
+-
+-enum Rank {
+-  ace,
+-  two,
+-  three,
+-  four,
+-  five,
+-  six,
+-  seven,
+-  eight,
+-  nine,
+-  ten,
+-  jack,
+-  queen,
+-  king,
+-  joker,
+-}
+-
+-extension SuitLabel on Suit {
+-  String get label => switch (this) {
+-        Suit.hearts => '♥',
+-        Suit.diamonds => '♦',
+-        Suit.clubs => '♣',
+-        Suit.spades => '♠',
+-        Suit.joker => '🃏',
+-      };
+-}
+-
+-extension RankLabel on Rank {
+-  String get label => switch (this) {
+-        Rank.ace => 'A',
+-        Rank.jack => 'J',
+-        Rank.queen => 'Q',
+-        Rank.king => 'K',
+-        Rank.joker => 'Joker',
+-        _ => (index + 1).toString(),
+-      };
+-}
+-
+-class PlayingCard {
+-  final Suit suit;
+-  final Rank rank;
+-
+-  const PlayingCard(this.suit, this.rank);
+-
+-  bool get isJoker => suit == Suit.joker || rank == Rank.joker;
+-
+-  Map<String, dynamic> toJson() => {
+-        'suit': suit.name,
+-        'rank': rank.name,
+-      };
+-
+-  factory PlayingCard.fromJson(Map<String, dynamic> json) => PlayingCard(
+-        Suit.values.firstWhere(
+-          (s) => s.name == json['suit'],
+-          orElse: () => Suit.hearts,
+-        ),
+-        Rank.values.firstWhere(
+-          (r) => r.name == json['rank'],
+-          orElse: () => Rank.ace,
+-        ),
+-      );
+-
+-  @override
+-  bool operator ==(Object other) =>
+-      other is PlayingCard && other.suit == suit && other.rank == rank;
+-
+-  @override
+-  int get hashCode => Object.hash(suit, rank);
+-}
+\ No newline at end of file
+diff --git a/lib/models/game_state.dart b/lib/models/game_state.dart
+index 99178faa4230fe7d1fa7c4ec9c78590fde75acac..0bdd251edd7b8550469d14711d0506c0d255c22c 100644
+--- a/lib/models/game_state.dart
++++ b/lib/models/game_state.dart
+@@ -1,77 +1,159 @@
+ import 'kadi_card.dart';
+ import 'kadi_player.dart';
+ 
+ class GameState {
++  static const Object _sentinel = Object();
++
+   final String id;
+   final List<KadiPlayer> players;
+   final List<KadiCard> drawPile;
+   final List<KadiCard> discardPile;
+   final int turnIndex;
+   final String gameStatus; // waiting | playing | finished
+   final DateTime createdAt;
+-  final Suit? requiredSuit; // after Ace rule, null otherwise
++  final Suit? requiredSuit; // suit requested by Ace change
++  final Rank? requestedRank; // Ace of spades request
++  final Suit? questionSuit; // pending 8/Q follow-up suit
++  final int pendingDraw; // accumulated penalty cards to draw
++  final bool clockwise; // true => clockwise, false => counter
++  final int skipCount; // number of players to skip on advance
++  final int maxPlayers; // desired seats in room
++  final String? winnerUid;
++  final List<String> nikoPending; // players who must announce
++  final List<String> nikoDeclared; // players that already called Niko Kadi
++  final List<String> eventLog; // chronological description of actions
+ 
+   GameState({
+     required this.id,
+     required this.players,
+     required this.drawPile,
+     required this.discardPile,
+     required this.turnIndex,
+     required this.gameStatus,
+     required this.createdAt,
+     this.requiredSuit,
+-  });
++    this.requestedRank,
++    this.questionSuit,
++    this.pendingDraw = 0,
++    this.clockwise = true,
++    this.skipCount = 0,
++    this.maxPlayers = 2,
++    this.winnerUid,
++    List<String>? nikoPending,
++    List<String>? nikoDeclared,
++    List<String>? eventLog,
++  })  : nikoPending = nikoPending ?? const [],
++        nikoDeclared = nikoDeclared ?? const [],
++        eventLog = eventLog ?? const [];
+ 
+   KadiCard get top => discardPile.isNotEmpty ? discardPile.last : drawPile.first;
+ 
+   GameState copyWith({
+     String? id,
+     List<KadiPlayer>? players,
+     List<KadiCard>? drawPile,
+     List<KadiCard>? discardPile,
+     int? turnIndex,
+     String? gameStatus,
+     DateTime? createdAt,
+-    Suit? requiredSuit,
++    Object? requiredSuit = _sentinel,
++    Object? requestedRank = _sentinel,
++    Object? questionSuit = _sentinel,
++    int? pendingDraw,
++    bool? clockwise,
++    int? skipCount,
++    int? maxPlayers,
++    Object? winnerUid = _sentinel,
++    List<String>? nikoPending,
++    List<String>? nikoDeclared,
++    List<String>? eventLog,
+   }) =>
+       GameState(
+         id: id ?? this.id,
+         players: players ?? List<KadiPlayer>.from(this.players),
+         drawPile: drawPile ?? List<KadiCard>.from(this.drawPile),
+         discardPile: discardPile ?? List<KadiCard>.from(this.discardPile),
+         turnIndex: turnIndex ?? this.turnIndex,
+         gameStatus: gameStatus ?? this.gameStatus,
+         createdAt: createdAt ?? this.createdAt,
+-        requiredSuit: requiredSuit,
++        requiredSuit: identical(requiredSuit, _sentinel)
++            ? this.requiredSuit
++            : requiredSuit as Suit?,
++        requestedRank: identical(requestedRank, _sentinel)
++            ? this.requestedRank
++            : requestedRank as Rank?,
++        questionSuit: identical(questionSuit, _sentinel)
++            ? this.questionSuit
++            : questionSuit as Suit?,
++        pendingDraw: pendingDraw ?? this.pendingDraw,
++        clockwise: clockwise ?? this.clockwise,
++        skipCount: skipCount ?? this.skipCount,
++        maxPlayers: maxPlayers ?? this.maxPlayers,
++        winnerUid: identical(winnerUid, _sentinel)
++            ? this.winnerUid
++            : winnerUid as String?,
++        nikoPending: nikoPending ?? List<String>.from(this.nikoPending),
++        nikoDeclared: nikoDeclared ?? List<String>.from(this.nikoDeclared),
++        eventLog: eventLog ?? List<String>.from(this.eventLog),
+       );
+ 
+   Map<String, dynamic> toJson() => {
+         'id': id,
+         'players': players.map((p) => p.toJson()).toList(),
+         'drawPile': drawPile.map((c) => c.toJson()).toList(),
+         'discardPile': discardPile.map((c) => c.toJson()).toList(),
+         'turnIndex': turnIndex,
+         'gameStatus': gameStatus,
+         'createdAt': createdAt.toIso8601String(),
+         'requiredSuit': requiredSuit?.name,
++        'requestedRank': requestedRank?.name,
++        'questionSuit': questionSuit?.name,
++        'pendingDraw': pendingDraw,
++        'clockwise': clockwise,
++        'skipCount': skipCount,
++        'maxPlayers': maxPlayers,
++        'winnerUid': winnerUid,
++        'nikoPending': nikoPending,
++        'nikoDeclared': nikoDeclared,
++        'eventLog': eventLog,
+       };
+ 
+   factory GameState.fromJson(Map<String, dynamic> json) => GameState(
+         id: json['id'] as String,
+         players: (json['players'] as List<dynamic>? ?? [])
+             .map((e) => KadiPlayer.fromJson(Map<String, dynamic>.from(e as Map)))
+             .toList(),
+         drawPile: (json['drawPile'] as List<dynamic>? ?? [])
+             .map((e) => KadiCard.fromJson(Map<String, dynamic>.from(e as Map)))
+             .toList(),
+         discardPile: (json['discardPile'] as List<dynamic>? ?? [])
+             .map((e) => KadiCard.fromJson(Map<String, dynamic>.from(e as Map)))
+             .toList(),
+         turnIndex: (json['turnIndex'] ?? 0) as int,
+         gameStatus: (json['gameStatus'] ?? 'waiting') as String,
+         createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
+         requiredSuit: (json['requiredSuit'] as String?) == null
+             ? null
+             : Suit.values.firstWhere((e) => e.name == json['requiredSuit']),
++        requestedRank: (json['requestedRank'] as String?) == null
++            ? null
++            : Rank.values.firstWhere((e) => e.name == json['requestedRank']),
++        questionSuit: (json['questionSuit'] as String?) == null
++            ? null
++            : Suit.values.firstWhere((e) => e.name == json['questionSuit']),
++        pendingDraw: (json['pendingDraw'] ?? 0) as int,
++        clockwise: (json['clockwise'] ?? true) as bool,
++        skipCount: (json['skipCount'] ?? 0) as int,
++        maxPlayers: (json['maxPlayers'] ?? 2) as int,
++        winnerUid: json['winnerUid'] as String?,
++        nikoPending: (json['nikoPending'] as List<dynamic>? ?? [])
++            .map((e) => e.toString())
++            .toList(),
++        nikoDeclared: (json['nikoDeclared'] as List<dynamic>? ?? [])
++            .map((e) => e.toString())
++            .toList(),
++        eventLog: (json['eventLog'] as List<dynamic>? ?? [])
++            .map((e) => e.toString())
++            .toList(),
+       );
+-}
+\ No newline at end of file
++}
+diff --git a/lib/models/kadi_card.dart b/lib/models/kadi_card.dart
+index a2d5953f98673bfd065c6d47f58aa09a4f12a41d..1d59bbd9260b0e2ca017a010835c0726776e3491 100644
+--- a/lib/models/kadi_card.dart
++++ b/lib/models/kadi_card.dart
+@@ -1,98 +1,142 @@
+ import 'dart:math';
+ 
+ enum Suit { clubs, diamonds, hearts, spades, joker }
++
+ enum Rank {
+-  ace, two, three, four, five, six, seven, eight, nine, ten, jack, queen, king,
++  ace,
++  two,
++  three,
++  four,
++  five,
++  six,
++  seven,
++  eight,
++  nine,
++  ten,
++  jack,
++  queen,
++  king,
+   joker,
+ }
+ 
++
+ extension RankLabel on Rank {
+   String get label {
+     switch (this) {
+       case Rank.ace:   return 'A';
+       case Rank.two:   return '2';
+       case Rank.three: return '3';
+       case Rank.four:  return '4';
+       case Rank.five:  return '5';
+       case Rank.six:   return '6';
+       case Rank.seven: return '7';
+       case Rank.eight: return '8';
+       case Rank.nine:  return '9';
+       case Rank.ten:   return '10';
+       case Rank.jack:  return 'J';
+       case Rank.queen: return 'Q';
+       case Rank.king:  return 'K';
+       case Rank.joker: return 'Jkr';
+     }
+   }
+ }
+ 
+ extension SuitLabel on Suit {
+   String get label {
+     switch (this) {
+       case Suit.clubs:    return 'Clubs';
+       case Suit.diamonds: return 'Diamonds';
+       case Suit.hearts:   return 'Hearts';
+       case Suit.spades:   return 'Spades';
+       case Suit.joker:    return 'Joker';
+     }
+   }
+ }
+ 
+ class KadiCard {
+   final String id;
+   final Suit suit;
+   final Rank rank;
+ 
+   KadiCard({
+     required this.id,
+     required this.suit,
+     required this.rank,
+   });
+ 
+   /// Simple helper used by UI
+   bool get isSpecial =>
+-      suit == Suit.joker || rank == Rank.two || rank == Rank.ace || rank == Rank.jack;
++      isJoker || rank == Rank.two || rank == Rank.three || rank == Rank.ace || rank == Rank.jack;
++
++  bool get isJoker => suit == Suit.joker || rank == Rank.joker;
++
++  bool get isAce => rank == Rank.ace;
++
++  bool get isAceOfSpades => isAce && suit == Suit.spades;
++
++  bool get isPenaltyCard => rank == Rank.two || rank == Rank.three || isJoker;
++
++  int get penaltyValue {
++    if (isJoker) return 5;
++    if (rank == Rank.two) return 2;
++    if (rank == Rank.three) return 3;
++    return 0;
++  }
++
++  bool get isReverse => rank == Rank.king;
++
++  bool get isSkip => rank == Rank.jack;
++
++  bool get isQuestionCard => rank == Rank.eight || rank == Rank.queen;
++
++  bool get isOrdinary =>
++      suit != Suit.joker &&
++      (rank == Rank.four ||
++          rank == Rank.five ||
++          rank == Rank.six ||
++          rank == Rank.seven ||
++          rank == Rank.nine ||
++          rank == Rank.ten);
+ 
+   /// Can this card be played on top of [top]?
+   bool matches(KadiCard top, {Suit? requiredSuit}) {
+     if (suit == Suit.joker || rank == Rank.joker) return true; // wild
+     if (requiredSuit != null) return suit == requiredSuit;
+     return suit == top.suit || rank == top.rank;
+   }
+ 
+   Map<String, dynamic> toJson() => {
+         'id': id,
+         'suit': suit.name,
+         'rank': rank.name,
+       };
+ 
+   factory KadiCard.fromJson(Map<String, dynamic> json) => KadiCard(
+         id: json['id'] as String,
+         suit: Suit.values.firstWhere((e) => e.name == json['suit']),
+         rank: Rank.values.firstWhere((e) => e.name == json['rank']),
+       );
+ 
+   static List<KadiCard> fullDeck({bool includeJokers = true}) {
+     final list = <KadiCard>[];
+     final rnd = Random();
+     for (final s in [Suit.clubs, Suit.diamonds, Suit.hearts, Suit.spades]) {
+       for (final r in [
+         Rank.ace, Rank.two, Rank.three, Rank.four, Rank.five, Rank.six,
+         Rank.seven, Rank.eight, Rank.nine, Rank.ten, Rank.jack, Rank.queen, Rank.king
+       ]) {
+         list.add(KadiCard(
+           id: 'c_${s.name}_${r.name}_${rnd.nextInt(1 << 32)}',
+           suit: s,
+           rank: r,
+         ));
+       }
+     }
+     if (includeJokers) {
+       list.add(KadiCard(id: 'j1_${rnd.nextInt(1 << 32)}', suit: Suit.joker, rank: Rank.joker));
+       list.add(KadiCard(id: 'j2_${rnd.nextInt(1 << 32)}', suit: Suit.joker, rank: Rank.joker));
+     }
+     list.shuffle();
+     return list;
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/models/kadi_player.dart b/lib/models/kadi_player.dart
+index 989ea6b787a1ffbcc2488ea1fb587d08f3386f89..5ab03ac0d771121cb90bad234fa0b331f36de7a2 100644
+--- a/lib/models/kadi_player.dart
++++ b/lib/models/kadi_player.dart
+@@ -19,26 +19,26 @@ class KadiPlayer {
+     bool? isAI,
+     List<KadiCard>? hand,
+   }) =>
+       KadiPlayer(
+         uid: uid ?? this.uid,
+         name: name ?? this.name,
+         isAI: isAI ?? this.isAI,
+         hand: hand ?? List<KadiCard>.from(this.hand),
+       );
+ 
+   Map<String, dynamic> toJson() => {
+         'uid': uid,
+         'name': name,
+         'isAI': isAI,
+         'hand': hand.map((e) => e.toJson()).toList(),
+       };
+ 
+   factory KadiPlayer.fromJson(Map<String, dynamic> json) => KadiPlayer(
+         uid: json['uid'] as String,
+         name: json['name'] as String,
+         isAI: (json['isAI'] ?? false) as bool,
+         hand: (json['hand'] as List<dynamic>? ?? [])
+             .map((e) => KadiCard.fromJson(Map<String, dynamic>.from(e as Map)))
+             .toList(),
+       );
+-}
+\ No newline at end of file
++}
+diff --git a/lib/models/player_model.dart b/lib/models/player_model.dart
+deleted file mode 100644
+index 8212820f3052e8ce91c6feb720e25b5d7351c301..0000000000000000000000000000000000000000
+--- a/lib/models/player_model.dart
++++ /dev/null
+@@ -1,40 +0,0 @@
+-import 'package:kadi/models/card_model.dart';
+-
+-class Player {
+-  final String uid;
+-  final String name;
+-  final List<PlayingCard> hand;
+-
+-  const Player({
+-    required this.uid,
+-    required this.name,
+-    required this.hand,
+-  });
+-
+-  Player copyWith({
+-    String? uid,
+-    String? name,
+-    List<PlayingCard>? hand,
+-  }) {
+-    return Player(
+-      uid: uid ?? this.uid,
+-      name: name ?? this.name,
+-      hand: hand ?? this.hand,
+-    );
+-  }
+-
+-  Map<String, dynamic> toJson() => {
+-        'uid': uid,
+-        'name': name,
+-        'hand': hand.map((c) => c.toJson()).toList(),
+-      };
+-
+-  factory Player.fromJson(Map<String, dynamic> json) => Player(
+-        uid: json['uid'] ?? '',
+-        name: json['name'] ?? '',
+-        hand: (json['hand'] as List? ?? [])
+-            .map((e) =>
+-                PlayingCard.fromJson(Map<String, dynamic>.from(e as Map)))
+-            .toList(),
+-      );
+-}
+\ No newline at end of file
+diff --git a/lib/services/game_service.dart b/lib/services/game_service.dart
+index d3d005d31c98e2e830f9acfd3597eaa36048759c..8e8c45f65de5980458d90afc187ffff47ca88069 100644
+--- a/lib/services/game_service.dart
++++ b/lib/services/game_service.dart
+@@ -1,141 +1,552 @@
+ import 'dart:async';
+ import 'dart:math';
++
++import '../engine/rule_engine.dart';
+ import '../models/game_state.dart';
+ import '../models/kadi_card.dart';
+ import '../models/kadi_player.dart';
+ 
+-/// Simple in-memory game server for local debugging.
+-/// If you later plug Firestore, replace the maps/streams with snapshots.
+ class GameService {
+-  static final GameService _i = GameService._internal();
+-  factory GameService() => _i;
++  static final GameService _instance = GameService._internal();
++  factory GameService() => _instance;
+   GameService._internal();
+ 
+-  final _states = <String, GameState>{};
++  final _rooms = <String, _Room>{};
+   final _controllers = <String, StreamController<GameState>>{};
+ 
+   Stream<GameState> watch(String gameId) {
+     _controllers.putIfAbsent(gameId, () => StreamController<GameState>.broadcast());
+-    final c = _controllers[gameId]!;
+-    final s = _states[gameId];
+-    if (s != null) {
+-      // emit current
+-      Future.microtask(() => c.add(s));
++    final controller = _controllers[gameId]!;
++    final room = _rooms[gameId];
++    if (room != null) {
++      Future.microtask(() => controller.add(room.state));
+     }
+-    return c.stream;
++    return controller.stream;
+   }
+ 
+-  void _emit(GameState s) {
+-    _states[s.id] = s;
+-    _controllers.putIfAbsent(s.id, () => StreamController<GameState>.broadcast());
+-    _controllers[s.id]!.add(s);
+-  }
++  GameState? getState(String gameId) => _rooms[gameId]?.state;
+ 
+-  /// Create a brand-new game with host as first player
+-  GameState createGame({required String id, required String hostUid, required String hostName}) {
+-    final deck = KadiCard.fullDeck();
++  GameState createGame({
++    required String id,
++    required String hostUid,
++    required String hostName,
++    required int maxPlayers,
++    bool isPublic = false,
++  }) {
+     final host = KadiPlayer(uid: hostUid, name: hostName, hand: []);
+-    // deal 7 to each joining player later; for host give 7 now
+-    for (var i = 0; i < 7; i++) {
+-      host.hand.add(deck.removeAt(0));
+-    }
+-    // flip starter
+-    final starter = deck.removeAt(0);
+-
+     final state = GameState(
+       id: id,
+       players: [host],
+-      drawPile: deck,
+-      discardPile: [starter],
++      drawPile: const [],
++      discardPile: const [],
+       turnIndex: 0,
+-      gameStatus: 'waiting', // will turn to 'playing' when >=2 players
++      gameStatus: 'waiting',
+       createdAt: DateTime.now(),
++      maxPlayers: maxPlayers,
++      eventLog: ['Room created by $hostName'],
+     );
+-    _emit(state);
++    final room = _Room(state: state, rules: const RuleState(), isPublic: isPublic);
++    _rooms[id] = room;
++    _emit(room, state);
+     return state;
+   }
+ 
+-  /// Add a player to an existing game (if not present already)
+-  void addPlayer(String gameId, {required String uid, required String name}) {
+-    final s = _states[gameId];
+-    if (s == null) return;
+-    if (s.players.any((p) => p.uid == uid)) return;
++  void addPlayer(
++    String gameId, {
++    required String uid,
++    required String name,
++  }) {
++    final room = _rooms[gameId];
++    if (room == null) return;
++    final state = room.state;
++    if (state.players.any((p) => p.uid == uid)) return;
++    if (state.players.length >= state.maxPlayers) return;
++
++    final players = List<KadiPlayer>.from(state.players)
++      ..add(KadiPlayer(uid: uid, name: name, hand: []));
++
++    var updated = state.copyWith(
++      players: players,
++      eventLog: _appendLog(state.eventLog, '$name joined the room'),
++    );
+ 
+-    final deck = List<KadiCard>.from(s.drawPile);
+-    final newPlayer = KadiPlayer(uid: uid, name: name, hand: []);
+-    for (var i = 0; i < 7; i++) {
+-      newPlayer.hand.add(deck.removeAt(0));
++    if (players.length >= 2 && players.length == state.maxPlayers) {
++      room.state = updated;
++      _startRound(room);
++      return;
+     }
+ 
+-    final players = List<KadiPlayer>.from(s.players)..add(newPlayer);
+-    final status = players.length >= 2 ? 'playing' : s.gameStatus;
++    room.state = updated;
++    _emit(room, updated);
++  }
++
++  void removePlayer(String gameId, String uid) {
++    final room = _rooms[gameId];
++    if (room == null) return;
++    final state = room.state;
++    final players = List<KadiPlayer>.from(state.players)
++      ..removeWhere((p) => p.uid == uid);
++    if (players.isEmpty) {
++      room.state = state.copyWith(
++        players: players,
++        gameStatus: 'waiting',
++        winnerUid: null,
++        eventLog: _appendLog(state.eventLog, 'All players left. Room reset'),
++      );
++      _emit(room, room.state);
++      return;
++    }
+ 
+-    _emit(s.copyWith(players: players, drawPile: deck, gameStatus: status));
++    room.rules = const RuleState();
++    final reset = state.copyWith(
++      players: players,
++      drawPile: const <KadiCard>[],
++      discardPile: const <KadiCard>[],
++      gameStatus: 'waiting',
++      turnIndex: 0,
++      winnerUid: null,
++      eventLog: _appendLog(state.eventLog, 'Player left the game'),
++    );
++    room.state = reset;
++    _emit(room, reset);
+   }
+ 
+-  /// Draw a card from the draw pile
+-  void drawCard(String gameId, String playerId) {
+-    final s = _states[gameId];
+-    if (s == null) return;
+-    if (s.drawPile.isEmpty) return;
+-    final idx = s.players.indexWhere((p) => p.uid == playerId);
+-    if (idx < 0) return;
++  void playCard(
++    String gameId,
++    String playerId,
++    KadiCard card, {
++    Suit? chosenSuit,
++    Rank? requestedRank,
++  }) {
++    final room = _rooms[gameId];
++    if (room == null) return;
++    if (room.state.gameStatus != 'playing') return;
+ 
+-    final deck = List<KadiCard>.from(s.drawPile);
+-    final card = deck.removeAt(0);
++    final state = room.state;
++    final players = List<KadiPlayer>.from(state.players);
++    if (players.isEmpty) return;
+ 
+-    final players = List<KadiPlayer>.from(s.players);
+-    final hand = List<KadiCard>.from(players[idx].hand)..add(card);
+-    players[idx] = players[idx].copyWith(hand: hand);
++    final turnPlayer = players[state.turnIndex];
++    if (turnPlayer.uid != playerId) return;
+ 
+-    _emit(s.copyWith(players: players, drawPile: deck));
+-  }
++    final handIndex = turnPlayer.hand.indexWhere((c) => c.id == card.id);
++    if (handIndex == -1) return;
+ 
+-  /// Play a card to the discard pile & advance turn
+-  void playCard(String gameId, String playerId, KadiCard card) {
+-    final s = _states[gameId];
+-    if (s == null) return;
++    final isSkipTarget = room.rules.skipCount > 0;
+ 
+-    final idx = s.players.indexWhere((p) => p.uid == playerId);
+-    if (idx < 0) return;
+-    final me = s.players[idx];
++    final validation = RuleEngine.canPlay(
++      state: room.rules,
++      card: card,
++      topCard: state.discardPile.last,
++      playerHand: turnPlayer.hand,
++      isSkipTarget: isSkipTarget,
++    );
+ 
+-    // must own the card
+-    if (!me.hand.any((c) => c.id == card.id)) return;
++    if (!validation.isValid) {
++      return;
++    }
+ 
+-    // must match rule
+-    final top = s.top;
+-    if (!card.matches(top, requiredSuit: s.requiredSuit)) return;
++    if (card.isAce && room.rules.pendingDraw == 0) {
++      if (card.isAceOfSpades) {
++        if (requestedRank == null && chosenSuit == null) {
++          // Ace of spades must either request rank or change suit.
++          return;
++        }
++      } else {
++        if (chosenSuit == null) {
++          return;
++        }
++      }
++    }
+ 
+-    // remove from hand, add to discard
+-    final players = List<KadiPlayer>.from(s.players);
+-    final myHand = List<KadiCard>.from(me.hand)..removeWhere((c) => c.id == card.id);
+-    players[idx] = me.copyWith(hand: myHand);
++    final discard = List<KadiCard>.from(state.discardPile)..add(card);
++    final drawPile = List<KadiCard>.from(state.drawPile);
+ 
+-    final discard = List<KadiCard>.from(s.discardPile)..add(card);
++    final updatedHand = List<KadiCard>.from(turnPlayer.hand)..removeAt(handIndex);
++    players[state.turnIndex] = turnPlayer.copyWith(hand: updatedHand);
+ 
+-    // next turn
+-    var nextIndex = (s.turnIndex + 1) % players.length;
++    var rules = room.rules;
++    final nikoRequired = rules.nikoPending.contains(playerId) ||
++        rules.nikoDeclared.contains(playerId);
++    final nikoDeclared = rules.nikoDeclared.contains(playerId);
+ 
+-    // ace: choose suit (for now, auto-pick suit of the card)
+-    Suit? requiredSuit;
+-    if (card.rank == Rank.ace) {
+-      requiredSuit = card.suit;
++    if (isSkipTarget) {
++      rules = rules.copyWith(
++        skipCount: max(0, rules.skipCount - 1),
++        skipCancelable: false,
++      );
+     }
+ 
+-    // win?
+-    var status = s.gameStatus;
+-    if (myHand.isEmpty) status = 'finished';
++    rules = RuleEngine.applyCardEffect(
++      state: rules,
++      card: card,
++      chosenSuit: chosenSuit,
++      requestedRank: requestedRank,
++    );
++
++    final logMessage = _describePlay(turnPlayer.name, card, chosenSuit, requestedRank);
++
++    if (updatedHand.isEmpty) {
++      rules = RuleEngine.removeNikoFlags(rules, playerId);
++      room.rules = rules;
++
++      final canWin = !nikoRequired || nikoDeclared;
++
++      if (canWin) {
++        final finished = state.copyWith(
++          players: players,
++          discardPile: discard,
++          drawPile: drawPile,
++          gameStatus: 'finished',
++          winnerUid: playerId,
++        );
++        _emit(room, finished.copyWith(
++          eventLog: _appendLog(finished.eventLog, logMessage),
++        ));
++        _scheduleRestart(room);
++      } else {
++        final nextIndex = RuleEngine.nextPlayerIndex(
++          state: rules,
++          currentIndex: state.turnIndex,
++          playerCount: players.length,
++        );
++
++        final updated = state.copyWith(
++          players: players,
++          discardPile: discard,
++          drawPile: drawPile,
++          turnIndex: nextIndex,
++          winnerUid: null,
++        );
++
++        _emit(room, updated.copyWith(
++          eventLog: _appendLog(
++            updated.eventLog,
++            '$logMessage (no Niko Kadi call)',
++          ),
++        ));
++      }
++      return;
++    }
++
++    if (RuleEngine.needsNikoCall(updatedHand)) {
++      rules = RuleEngine.markNikoPending(rules, playerId);
++    } else {
++      rules = RuleEngine.removeNikoFlags(rules, playerId);
++    }
+ 
+-    _emit(s.copyWith(
++    final nextIndex = RuleEngine.nextPlayerIndex(
++      state: rules,
++      currentIndex: state.turnIndex,
++      playerCount: players.length,
++    );
++
++    room.rules = rules;
++
++    final updated = state.copyWith(
+       players: players,
+       discardPile: discard,
++      drawPile: drawPile,
+       turnIndex: nextIndex,
+-      gameStatus: status,
+-      requiredSuit: requiredSuit,
++    );
++
++    _emit(room, updated.copyWith(
++      eventLog: _appendLog(updated.eventLog, logMessage),
++    ));
++  }
++
++  void drawCard(String gameId, String playerId) {
++    final room = _rooms[gameId];
++    if (room == null) return;
++    if (room.state.gameStatus != 'playing') return;
++
++    final state = room.state;
++    final players = List<KadiPlayer>.from(state.players);
++    if (players.isEmpty) return;
++
++    final turnPlayer = players[state.turnIndex];
++    if (turnPlayer.uid != playerId) return;
++
++    if (room.rules.skipCount > 0 && room.rules.skipCancelable) {
++      passTurn(gameId, playerId);
++      return;
++    }
++
++    final drawCount = room.rules.pendingDraw > 0
++        ? room.rules.pendingDraw
++        : 1;
++
++    final drawResult = _drawCards(state.drawPile, state.discardPile, drawCount);
++    final newHand = List<KadiCard>.from(turnPlayer.hand)..addAll(drawResult.drawn);
++    players[state.turnIndex] = turnPlayer.copyWith(hand: newHand);
++
++    var rules = room.rules;
++
++    String message;
++    if (room.rules.pendingDraw > 0) {
++      message = '${turnPlayer.name} drew ${drawResult.drawn.length} penalty cards';
++      rules = rules.copyWith(
++        pendingDraw: 0,
++        skipCancelable: false,
++        clearForcedSuit: true,
++        clearRequestedRank: true,
++      );
++    } else if (room.rules.questionSuit != null) {
++      message = '${turnPlayer.name} failed the question and drew a card';
++      rules = rules.copyWith(clearQuestionSuit: true, skipCancelable: false);
++    } else {
++      message = '${turnPlayer.name} drew a card';
++    }
++
++    rules = RuleEngine.cancelRequestedRankIfImpossible(
++      state: rules,
++      playerHand: newHand,
++    );
++
++    if (RuleEngine.needsNikoCall(newHand)) {
++      rules = RuleEngine.markNikoPending(rules, playerId);
++    } else {
++      rules = RuleEngine.removeNikoFlags(rules, playerId);
++    }
++
++    room.rules = rules;
++
++    final updated = state.copyWith(
++      players: players,
++      drawPile: drawResult.drawPile,
++      discardPile: drawResult.discardPile,
++    );
++
++    _emit(room, updated.copyWith(
++      eventLog: _appendLog(updated.eventLog, message),
+     ));
++
++    if (room.rules.pendingDraw == 0 && room.rules.questionSuit == null) {
++      passTurn(gameId, playerId);
++    }
++  }
++
++  void passTurn(String gameId, String playerId) {
++    final room = _rooms[gameId];
++    if (room == null) return;
++    if (room.state.gameStatus != 'playing') return;
++
++    final state = room.state;
++    final players = List<KadiPlayer>.from(state.players);
++    if (players.isEmpty) return;
++
++    final turnPlayer = players[state.turnIndex];
++    if (turnPlayer.uid != playerId) return;
++
++    var rules = room.rules;
++    if (rules.skipCount > 0) {
++      rules = RuleEngine.clearAfterSkipResolution(rules);
++    }
++
++    final nextIndex = RuleEngine.nextPlayerIndex(
++      state: rules,
++      currentIndex: state.turnIndex,
++      playerCount: players.length,
++    );
++
++    room.rules = rules;
++
++    final updated = state.copyWith(turnIndex: nextIndex);
++    _emit(room, updated.copyWith(
++      eventLog: _appendLog(updated.eventLog, '${turnPlayer.name} passed'),
++    ));
++  }
++
++  void declareNikoKadi(String gameId, String playerId) {
++    final room = _rooms[gameId];
++    if (room == null) return;
++    if (room.state.gameStatus != 'playing') return;
++
++    if (!room.rules.nikoPending.contains(playerId)) return;
++
++    room.rules = RuleEngine.markNikoDeclared(room.rules, playerId);
++
++    final player = room.state.players.firstWhere((p) => p.uid == playerId, orElse: () =>
++        KadiPlayer(uid: playerId, name: 'Player', hand: const []));
++
++    _emit(
++      room,
++      room.state.copyWith(
++        eventLog: _appendLog(
++          room.state.eventLog,
++          '${player.name} called Niko Kadi!',
++        ),
++      ),
++    );
++  }
++
++  void _startRound(_Room room) {
++    if (room.state.players.length < 2) {
++      return;
++    }
++
++    final rnd = Random();
++    final deck = KadiCard.fullDeck();
++
++    final players = room.state.players
++        .map((p) => p.copyWith(hand: []))
++        .toList()
++      ..shuffle(rnd);
++
++    for (var i = 0; i < players.length; i++) {
++      final hand = <KadiCard>[];
++      for (var j = 0; j < 4; j++) {
++        hand.add(deck.removeLast());
++      }
++      players[i] = players[i].copyWith(hand: hand);
++    }
++
++    var starterIndex = deck.lastIndexWhere((c) => c.isOrdinary);
++    if (starterIndex < 0) {
++      starterIndex = deck.length - 1;
++    }
++    final starter = deck.removeAt(starterIndex);
++    final discard = <KadiCard>[starter];
++
++    final turnIndex = rnd.nextInt(players.length);
++
++    room.rules = const RuleState();
++    room.rules = room.rules.copyWith(clockwise: true);
++
++    final started = room.state.copyWith(
++      players: players,
++      drawPile: deck,
++      discardPile: discard,
++      turnIndex: turnIndex,
++      gameStatus: 'playing',
++      winnerUid: null,
++      eventLog: _appendLog(
++        room.state.eventLog,
++        'Round started. ${players[turnIndex].name} begins with ${starter.rank.label} of ${starter.suit.label}.',
++      ),
++    );
++
++    room.autoRestartScheduled = false;
++    _emit(room, started);
++  }
++
++  void _scheduleRestart(_Room room) {
++    if (room.autoRestartScheduled) return;
++    room.autoRestartScheduled = true;
++    Future.delayed(const Duration(seconds: 3), () {
++      if (!_rooms.containsKey(room.state.id)) return;
++      if (room.state.players.length < 2) {
++        final waiting = room.state.copyWith(
++          gameStatus: 'waiting',
++          eventLog: _appendLog(room.state.eventLog, 'Waiting for more players'),
++        );
++        room.rules = const RuleState();
++        room.autoRestartScheduled = false;
++        _emit(room, waiting);
++        return;
++      }
++      _startRound(room);
++    });
++  }
++
++  void _emit(_Room room, GameState state) {
++    final synced = state.copyWith(
++      requiredSuit: room.rules.forcedSuit,
++      requestedRank: room.rules.requestedRank,
++      questionSuit: room.rules.questionSuit,
++      pendingDraw: room.rules.pendingDraw,
++      clockwise: room.rules.clockwise,
++      skipCount: room.rules.skipCount,
++      nikoPending: room.rules.nikoPending.toList(),
++      nikoDeclared: room.rules.nikoDeclared.toList(),
++    );
++    room.state = synced;
++    _controllers.putIfAbsent(synced.id, () => StreamController<GameState>.broadcast());
++    _controllers[synced.id]!.add(synced);
++  }
++
++  _DrawResult _drawCards(
++    List<KadiCard> drawPile,
++    List<KadiCard> discardPile,
++    int count,
++  ) {
++    final draw = List<KadiCard>.from(drawPile);
++    final discard = List<KadiCard>.from(discardPile);
++    final drawn = <KadiCard>[];
++
++    for (var i = 0; i < count; i++) {
++      if (draw.isEmpty) {
++        if (discard.length <= 1) {
++          break;
++        }
++        final top = discard.removeLast();
++        draw.addAll(discard);
++        draw.shuffle();
++        discard
++          ..clear()
++          ..add(top);
++      }
++      drawn.add(draw.removeLast());
++    }
++
++    return _DrawResult(drawPile: draw, discardPile: discard, drawn: drawn);
++  }
++
++  List<String> _appendLog(List<String> current, String entry) {
++    final updated = List<String>.from(current)..add(entry);
++    if (updated.length > 30) {
++      updated.removeRange(0, updated.length - 30);
++    }
++    return updated;
++  }
++
++  String _describePlay(String playerName, KadiCard card, Suit? chosenSuit, Rank? requestedRank) {
++    final buffer = StringBuffer('$playerName played ${card.rank.label} of ${card.suit.label}');
++    if (card.isAce && chosenSuit != null && card.isAceOfSpades == false) {
++      buffer.write(' choosing ${chosenSuit.label}');
++    }
++    if (card.isAceOfSpades && requestedRank != null) {
++      buffer.write(' requesting ${requestedRank.label}');
++    }
++    if (card.isPenaltyCard) {
++      buffer.write(' (penalty +${card.penaltyValue})');
++    }
++    if (card.rank == Rank.jack) {
++      buffer.write(' (jump)');
++    }
++    if (card.rank == Rank.king) {
++      buffer.write(' (reverse)');
++    }
++    if (card.isQuestionCard) {
++      buffer.write(' (question)');
++    }
++    return buffer.toString();
+   }
+ 
+-  /// Quick helper for tests
+   String randomId() => 'g_${Random().nextInt(1 << 32)}';
+-}
+\ No newline at end of file
++}
++
++class _Room {
++  _Room({
++    required this.state,
++    required this.rules,
++    required this.isPublic,
++  });
++
++  GameState state;
++  RuleState rules;
++  final bool isPublic;
++  bool autoRestartScheduled = false;
++}
++
++class _DrawResult {
++  _DrawResult({
++    required this.drawPile,
++    required this.discardPile,
++    required this.drawn,
++  });
++
++  final List<KadiCard> drawPile;
++  final List<KadiCard> discardPile;
++  final List<KadiCard> drawn;
++}
+diff --git a/lib/services/matchmaking_service.dart b/lib/services/matchmaking_service.dart
+index 3186d0dab5c0cb2f8a9f85b160ba077bcf586661..63fdfa0df7f1cb650e8090cc22725f2056929010 100644
+--- a/lib/services/matchmaking_service.dart
++++ b/lib/services/matchmaking_service.dart
+@@ -1,66 +1,135 @@
+ import 'dart:math';
++
+ import '../models/game_state.dart';
+-import '../models/kadi_card.dart';
+-import '../models/kadi_player.dart';
+ import 'game_service.dart';
+ 
+-/// Matchmaking & room management over the local in-memory GameService.
+-/// If you later switch to Firestore, keep the same API and swap internals.
+ class MatchmakingService {
+-  static final MatchmakingService _i = MatchmakingService._internal();
+-  factory MatchmakingService() => _i;
++  static final MatchmakingService _instance = MatchmakingService._internal();
++  factory MatchmakingService() => _instance;
+   MatchmakingService._internal();
+ 
+-  final _svc = GameService();
+-  final _rooms = <String, String>{}; // roomCode -> gameId
++  final GameService _gameService = GameService();
++  final _rooms = <String, _RoomInfo>{};
+ 
+-  /// Create a room (game) with host as first player. Returns room code.
+   Future<String> createRoom({
+     required String hostUid,
+     required String hostName,
++    required int seats,
+   }) async {
+-    final gameId = _svc.randomId();
+-    _svc.createGame(id: gameId, hostUid: hostUid, hostName: hostName);
+-
+-    // simple 6-letter uppercase code
+-    final code = _makeCode();
+-    _rooms[code] = gameId;
++    _validateSeatCount(seats);
++    final gameId = _gameService.randomId();
++    _gameService.createGame(
++      id: gameId,
++      hostUid: hostUid,
++      hostName: hostName,
++      maxPlayers: seats,
++      isPublic: false,
++    );
++    final code = _generateUniqueCode();
++    _rooms[code] = _RoomInfo(gameId: gameId, capacity: seats, isPublic: false);
+     return code;
+   }
+ 
+-  /// Join an existing room by code. Returns the gameId.
+-  Future<String> joinRoom(String code, String uid, String name) async {
+-    final gameId = _rooms[code];
+-    if (gameId == null) {
++  Future<String> joinRoom(
++    String code,
++    String uid,
++    String name,
++  ) async {
++    final info = _rooms[code];
++    if (info == null) {
+       throw StateError('Room not found');
+     }
+-    _svc.addPlayer(gameId, uid: uid, name: name);
++
++    final state = _gameService.getState(info.gameId);
++    if (state == null) {
++      throw StateError('Game not initialised');
++    }
++
++    if (state.players.any((p) => p.uid == uid)) {
++      return info.gameId;
++    }
++
++    if (state.players.length >= info.capacity) {
++      throw StateError('Room is full');
++    }
++
++    _gameService.addPlayer(info.gameId, uid: uid, name: name);
++    return info.gameId;
++  }
++
++  Future<String> quickPlay({
++    required String uid,
++    required String name,
++    required int seats,
++  }) async {
++    _validateSeatCount(seats);
++    final available = _findPublicRoom(seats);
++    if (available != null) {
++      _gameService.addPlayer(available.gameId, uid: uid, name: name);
++      return available.gameId;
++    }
++
++    final gameId = _gameService.randomId();
++    _gameService.createGame(
++      id: gameId,
++      hostUid: uid,
++      hostName: name,
++      maxPlayers: seats,
++      isPublic: true,
++    );
++    final code = _generateUniqueCode();
++    _rooms[code] = _RoomInfo(gameId: gameId, capacity: seats, isPublic: true);
+     return gameId;
+   }
+ 
+-  /// Quick play: join the first waiting room or create a new one.
+-  Future<String> quickJoinOrCreate(String uid, String name) async {
+-    // naive: pick any existing room with 'waiting'
++  Future<GameState> watchOnce(String gameId) async {
++    return _gameService.watch(gameId).first;
++  }
++
++  String? gameIdForCode(String code) => _rooms[code]?.gameId;
++
++  void _validateSeatCount(int seats) {
++    if (seats < 2 || seats > 7) {
++      throw ArgumentError('Kadi supports between 2 and 7 players.');
++    }
++  }
++
++  _RoomInfo? _findPublicRoom(int seats) {
+     for (final entry in _rooms.entries) {
+-      final state = await watchOnce(entry.value);
+-      if (state.gameStatus == 'waiting') {
+-        _svc.addPlayer(entry.value, uid: uid, name: name);
+-        return entry.value;
++      final info = entry.value;
++      if (!info.isPublic || info.capacity != seats) continue;
++      final state = _gameService.getState(info.gameId);
++      if (state == null) continue;
++      if (state.gameStatus == 'waiting' && state.players.length < info.capacity) {
++        return info;
+       }
+     }
+-    // create host as you
+-    final code = await createRoom(hostUid: uid, hostName: name);
+-    return _rooms[code]!;
++    return null;
+   }
+ 
+-  /// Utility to fetch a single snapshot once from GameService stream.
+-  Future<GameState> watchOnce(String gameId) async {
+-    return await _svc.watch(gameId).first;
++  String _generateUniqueCode() {
++    String code;
++    do {
++      code = _makeCode();
++    } while (_rooms.containsKey(code));
++    return code;
+   }
+ 
+   String _makeCode() {
+     const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+     final rnd = Random();
+     return List.generate(6, (_) => letters[rnd.nextInt(letters.length)]).join();
+   }
+-}
+\ No newline at end of file
++}
++
++class _RoomInfo {
++  const _RoomInfo({
++    required this.gameId,
++    required this.capacity,
++    required this.isPublic,
++  });
++
++  final String gameId;
++  final int capacity;
++  final bool isPublic;
++}
+diff --git a/lib/services/online_service.dart b/lib/services/online_service.dart
+index b2105ad8ce9e738189828581bf6d359f86bfb91e..daebba6dd7d283e09bed377ad5d8cb7d3a07f556 100644
+--- a/lib/services/online_service.dart
++++ b/lib/services/online_service.dart
+@@ -1,191 +1,107 @@
+-import 'package:cloud_firestore/cloud_firestore.dart';
+-import 'package:firebase_auth/firebase_auth.dart';
+ import 'dart:math';
+ 
++import '../models/game_state.dart';
++import '../models/kadi_card.dart';
++import 'game_service.dart';
++import 'matchmaking_service.dart';
++
++/// High level façade used by the UI to interact with the multiplayer engine.
++/// It wraps the in-memory [GameService] with matchmaking helpers so that the
++/// rest of the app does not need to know about rooms, decks or rule state.
+ class OnlineService {
+-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+-  final FirebaseAuth _auth = FirebaseAuth.instance;
++  OnlineService._internal()
++      : _uid = 'p_${Random().nextInt(1 << 32)}';
++
++  static final OnlineService _instance = OnlineService._internal();
++  factory OnlineService() => _instance;
++
++  final GameService _game = GameService();
++  final MatchmakingService _matchmaking = MatchmakingService();
++  final String _uid;
+ 
+-  String get uid => _auth.currentUser?.uid ?? '';
++  String get uid => _uid;
+ 
+-  OnlineService() {
+-    // Ensure user is signed in anonymously
+-    _initUser();
++  /// Create a private invite room. Returns the room code to share.
++  Future<String> createInviteRoom({
++    required String nickname,
++    required int seats,
++  }) async {
++    return _matchmaking.createRoom(
++      hostUid: uid,
++      hostName: nickname,
++      seats: seats,
++    );
+   }
+ 
+-  Future<void> _initUser() async {
+-    if (_auth.currentUser == null) {
+-      await _auth.signInAnonymously();
++  /// Join an invite room by code. Returns the gameId once joined.
++  Future<String?> joinRoom({
++    required String code,
++    required String nickname,
++  }) async {
++    try {
++      return _matchmaking.joinRoom(code, uid, nickname);
++    } on StateError {
++      return null;
+     }
+   }
+ 
+-  // Firestore collection reference
+-  CollectionReference<Map<String, dynamic>> get rooms =>
+-      _db.collection('rooms');
+-
+-  /// ✅ Create a new game room
+-  Future<String> createRoom({required String nickname}) async {
+-    await _initUser();
+-
+-    final roomCode = _generateRoomCode();
+-    final player = {
+-      'uid': uid,
+-      'name': nickname,
+-      'hand': [],
+-    };
+-
+-    await rooms.doc(roomCode).set({
+-      'code': roomCode,
+-      'status': 'waiting',
+-      'turnIndex': 0,
+-      'players': [player],
+-      'pile': [],
+-      'winner': null,
+-      'createdAt': FieldValue.serverTimestamp(),
+-    });
+-
+-    return roomCode;
++  /// Quick matchmaking by player count. Returns the gameId.
++  Future<String> quickPlay({
++    required String nickname,
++    required int seats,
++  }) async {
++    return _matchmaking.quickPlay(uid: uid, name: nickname, seats: seats);
+   }
+ 
+-  /// ✅ Join an existing room
+-  Future<bool> joinRoom({required String code, required String nickname}) async {
+-    await _initUser();
+-
+-    final ref = rooms.doc(code);
+-    final snap = await ref.get();
+-    if (!snap.exists) return false;
+-
+-    final data = snap.data()!;
+-    final players = List<Map<String, dynamic>>.from(data['players']);
+-
+-    final alreadyJoined =
+-        players.any((p) => p['uid'] == uid || p['name'] == nickname);
+-    if (alreadyJoined) return true;
+-
+-    if (players.length >= 4) return false; // limit to 4 players
+-
+-    players.add({'uid': uid, 'name': nickname, 'hand': []});
+-    await ref.update({'players': players});
+-    return true;
++  /// Resolve a room code into its live [GameState] stream.
++  Stream<GameState> watchRoom(String code) {
++    final gameId = _matchmaking.gameIdForCode(code);
++    if (gameId == null) {
++      return const Stream.empty();
++    }
++    return _game.watch(gameId);
+   }
+ 
+-  /// ✅ Real-time updates of room state
+-  Stream<DocumentSnapshot<Map<String, dynamic>>> watchRoom(String code) {
+-    return rooms.doc(code).snapshots();
++  GameState? getGameByCode(String code) {
++    final gameId = _matchmaking.gameIdForCode(code);
++    if (gameId == null) return null;
++    return _game.getState(gameId);
+   }
+ 
+-  /// ✅ Play a card
+-  Future<void> playCard({
++  GameState? getGame(String gameId) => _game.getState(gameId);
++
++  void playCard({
+     required String code,
+-    required Map<String, dynamic> card,
+-  }) async {
+-    final ref = rooms.doc(code);
+-    await _db.runTransaction((tx) async {
+-      final snap = await tx.get(ref);
+-      if (!snap.exists) return;
+-
+-      final data = snap.data()!;
+-      final players = List<Map<String, dynamic>>.from(data['players']);
+-      final pile = List<Map<String, dynamic>>.from(data['pile']);
+-      final turnIndex = data['turnIndex'] ?? 0;
+-
+-      final player = players[turnIndex];
+-      final hand = List<Map<String, dynamic>>.from(player['hand']);
+-      hand.removeWhere((c) => c['rank'] == card['rank'] && c['suit'] == card['suit']);
+-      players[turnIndex]['hand'] = hand;
+-
+-      pile.add(card);
+-
+-      int nextTurn = (turnIndex + 1) % players.length;
+-      String? winner;
+-      String status = data['status'];
+-
+-      if (hand.isEmpty) {
+-        status = 'over';
+-        winner = player['name'];
+-      }
+-
+-      tx.update(ref, {
+-        'players': players,
+-        'pile': pile,
+-        'turnIndex': nextTurn,
+-        'status': status,
+-        'winner': winner,
+-      });
+-    });
++    required KadiCard card,
++    Suit? chosenSuit,
++    Rank? requestedRank,
++  }) {
++    final gameId = _matchmaking.gameIdForCode(code);
++    if (gameId == null) return;
++    _game.playCard(gameId, uid, card, chosenSuit: chosenSuit, requestedRank: requestedRank);
+   }
+ 
+-  /// ✅ Draw a card (adds 1 new card to player's hand)
+-  Future<void> drawCard({required String code, int count = 1}) async {
+-    final ref = rooms.doc(code);
+-    await _db.runTransaction((tx) async {
+-      final snap = await tx.get(ref);
+-      if (!snap.exists) return;
+-
+-      final data = snap.data()!;
+-      final turnIndex = data['turnIndex'] ?? 0;
+-      final players = List<Map<String, dynamic>>.from(data['players']);
+-      final hand = List<Map<String, dynamic>>.from(players[turnIndex]['hand']);
+-
+-      final newCards = _generateCards(count);
+-      hand.addAll(newCards);
+-      players[turnIndex]['hand'] = hand;
+-
+-      tx.update(ref, {'players': players});
+-    });
++  void drawCard(String code) {
++    final gameId = _matchmaking.gameIdForCode(code);
++    if (gameId == null) return;
++    _game.drawCard(gameId, uid);
+   }
+ 
+-  /// ✅ Leave a room
+-  Future<void> leaveRoom(String code) async {
+-    final ref = rooms.doc(code);
+-    await _db.runTransaction((tx) async {
+-      final snap = await tx.get(ref);
+-      if (!snap.exists) return;
+-
+-      final data = snap.data()!;
+-      final players = List<Map<String, dynamic>>.from(data['players']);
+-      players.removeWhere((p) => p['uid'] == uid);
+-
+-      if (players.isEmpty) {
+-        tx.delete(ref);
+-      } else {
+-        tx.update(ref, {'players': players});
+-      }
+-    });
++  void passTurn(String code) {
++    final gameId = _matchmaking.gameIdForCode(code);
++    if (gameId == null) return;
++    _game.passTurn(gameId, uid);
+   }
+ 
+-  // 🔹 Utility: generate a random 4-letter room code
+-  String _generateRoomCode() {
+-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+-    final rand = Random();
+-    return String.fromCharCodes(
+-      Iterable.generate(4, (_) => chars.codeUnitAt(rand.nextInt(chars.length))),
+-    );
++  void declareNikoKadi(String code) {
++    final gameId = _matchmaking.gameIdForCode(code);
++    if (gameId == null) return;
++    _game.declareNikoKadi(gameId, uid);
+   }
+ 
+-  // 🔹 Utility: generate random playing cards
+-  List<Map<String, String>> _generateCards(int count) {
+-    const suits = ['♠', '♥', '♦', '♣'];
+-    const ranks = [
+-      'A',
+-      '2',
+-      '3',
+-      '4',
+-      '5',
+-      '6',
+-      '7',
+-      '8',
+-      '9',
+-      '10',
+-      'J',
+-      'Q',
+-      'K'
+-    ];
+-    final rand = Random();
+-    return List.generate(count, (_) {
+-      final suit = suits[rand.nextInt(suits.length)];
+-      final rank = ranks[rand.nextInt(ranks.length)];
+-      return {'suit': suit, 'rank': rank};
+-    });
++  void leaveGame(String code) {
++    final gameId = _matchmaking.gameIdForCode(code);
++    if (gameId == null) return;
++    _game.removePlayer(gameId, uid);
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/ui/screens/game_board_screen.dart b/lib/ui/screens/game_board_screen.dart
+index 2c2ee4b9050bff1b3ff29e8b02a37ffe3caef312..a0351667ec9c58cfe6c470b4ae2658c6fca9c0ff 100644
+--- a/lib/ui/screens/game_board_screen.dart
++++ b/lib/ui/screens/game_board_screen.dart
+@@ -1,204 +1,334 @@
+ import 'package:flutter/material.dart';
+-import 'package:cloud_firestore/cloud_firestore.dart';
+-import 'package:kadi/services/online_service.dart';
++
++import '../../models/game_state.dart';
++import '../../models/kadi_card.dart';
++import '../../models/kadi_player.dart';
++import '../../services/online_service.dart';
++import '../widgets/hand_widget.dart';
++import '../widgets/playing_card_widget.dart';
+ 
+ class GameBoardScreen extends StatefulWidget {
+   final String roomCode;
+ 
+   const GameBoardScreen({super.key, required this.roomCode});
+ 
+   @override
+   State<GameBoardScreen> createState() => _GameBoardScreenState();
+ }
+ 
+ class _GameBoardScreenState extends State<GameBoardScreen> {
+   final OnlineService _svc = OnlineService();
+ 
+   @override
+   Widget build(BuildContext context) {
+     return Scaffold(
+-      backgroundColor: Colors.green.shade800,
++      backgroundColor: const Color(0xFF0D4D2A),
+       appBar: AppBar(
+-        title: Text('Kadi - Room ${widget.roomCode}'),
+-        centerTitle: true,
+-        backgroundColor: Colors.green.shade900,
++        backgroundColor: const Color(0xFF08361D),
++        title: Text('Room ${widget.roomCode}'),
++        actions: [
++          IconButton(
++            icon: const Icon(Icons.exit_to_app),
++            tooltip: 'Leave room',
++            onPressed: () {
++              _svc.leaveGame(widget.roomCode);
++              Navigator.of(context).maybePop();
++            },
++          )
++        ],
+       ),
+-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
++      body: StreamBuilder<GameState>(
+         stream: _svc.watchRoom(widget.roomCode),
+         builder: (context, snapshot) {
+-          if (!snapshot.hasData) {
++          if (snapshot.connectionState == ConnectionState.waiting) {
+             return const Center(child: CircularProgressIndicator());
+           }
+-          final data = snapshot.data!.data();
+-          if (data == null) return const Center(child: Text('Room not found'));
+-
+-          final players = List<Map<String, dynamic>>.from(data['players'] ?? []);
+-          final pile = List<Map<String, dynamic>>.from(data['pile'] ?? []);
+-          final topCard = pile.isNotEmpty ? pile.last : null;
+-          final winner = data['winner'];
+-          final status = data['status'];
++          final state = snapshot.data;
++          if (state == null) {
++            return const Center(child: Text('Waiting for game to start'));
++          }
+ 
+-          if (status == 'over' && winner != null) {
+-            return _buildWinnerView(winner);
++          if (state.gameStatus == 'finished' && state.winnerUid != null) {
++            final winner = state.players.firstWhere(
++              (p) => p.uid == state.winnerUid,
++              orElse: () => KadiPlayer(uid: state.winnerUid!, name: 'Winner', hand: const []),
++            );
++            return _buildWinnerView(winner.name);
+           }
+ 
++          final me = state.players.firstWhere(
++            (p) => p.uid == _svc.uid,
++            orElse: () => state.players.isEmpty
++                ? KadiPlayer(uid: _svc.uid, name: 'You', hand: const [])
++                : state.players.first,
++          );
++
++          final isMyTurn = state.players.isNotEmpty &&
++              state.players[state.turnIndex % state.players.length].uid == me.uid;
++
+           return Column(
++            crossAxisAlignment: CrossAxisAlignment.stretch,
+             children: [
+-              _buildPlayersRow(players, data['turnIndex']),
+-              const Divider(color: Colors.white),
++              _buildPlayersRow(state, me.uid),
++              const Divider(color: Colors.white24),
+               Expanded(
+                 child: Center(
+-                  child: topCard == null
+-                      ? const Text("No card yet")
+-                      : _buildCard(topCard),
++                  child: _buildCenterPanel(state),
+                 ),
+               ),
+-              const Divider(color: Colors.white),
+-              _buildPlayerHand(players),
+-              const SizedBox(height: 10),
+-              _buildActionButtons(),
++              const Divider(color: Colors.white24),
++              _buildActionBar(state, me, isMyTurn),
+             ],
+           );
+         },
+       ),
+     );
+   }
+ 
+-  Widget _buildPlayersRow(List<Map<String, dynamic>> players, int? turnIndex) {
+-    return Container(
+-      height: 80,
+-      padding: const EdgeInsets.all(8),
++  Widget _buildPlayersRow(GameState state, String myId) {
++    return SizedBox(
++      height: 86,
+       child: ListView.separated(
++        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+         scrollDirection: Axis.horizontal,
+-        itemCount: players.length,
+-        separatorBuilder: (_, __) => const SizedBox(width: 12),
+-        itemBuilder: (context, i) {
+-          final player = players[i];
+-          final isTurn = turnIndex == i;
++        itemCount: state.players.length,
++        separatorBuilder: (_, __) => const SizedBox(width: 10),
++        itemBuilder: (context, index) {
++          final player = state.players[index];
++          final isTurn = index == state.turnIndex % state.players.length;
++          final isMe = player.uid == myId;
+           return Column(
+             children: [
+               CircleAvatar(
+-                backgroundColor: isTurn ? Colors.yellow : Colors.grey.shade300,
++                radius: 26,
++                backgroundColor: isTurn ? Colors.amber : Colors.black45,
+                 child: Text(
+-                  player['name'][0].toUpperCase(),
+-                  style: const TextStyle(color: Colors.black),
++                  player.name.isNotEmpty ? player.name[0].toUpperCase() : '?',
++                  style: TextStyle(
++                    fontWeight: FontWeight.bold,
++                    fontSize: 18,
++                    color: isTurn ? Colors.black : Colors.white,
++                  ),
+                 ),
+               ),
+-              const SizedBox(height: 4),
++              const SizedBox(height: 6),
+               Text(
+-                player['name'],
++                isMe ? '${player.name} (You)' : player.name,
+                 style: TextStyle(
+-                  color: isTurn ? Colors.yellow : Colors.white,
++                  color: isTurn ? Colors.amber : Colors.white,
+                   fontWeight: isTurn ? FontWeight.bold : FontWeight.normal,
++                  fontSize: 13,
+                 ),
+               ),
++              Text(
++                '${player.hand.length} cards',
++                style: const TextStyle(color: Colors.white54, fontSize: 11),
++              ),
+             ],
+           );
+         },
+       ),
+     );
+   }
+ 
+-  Widget _buildCard(Map<String, dynamic> card) {
+-    final rank = card['rank'];
+-    final suit = card['suit'];
++  Widget _buildCenterPanel(GameState state) {
++    final top = state.discardPile.isNotEmpty ? state.discardPile.last : null;
++    return Column(
++      mainAxisSize: MainAxisSize.min,
++      children: [
++        Text(
++          state.pendingDraw > 0
++              ? 'Penalty stack: +${state.pendingDraw}'
++              : state.requiredSuit != null
++                  ? 'Suit required: ${state.requiredSuit!.label}'
++                  : state.requestedRank != null
++                      ? 'Requested: ${state.requestedRank!.label}'
++                      : state.questionSuit != null
++                          ? 'Answer with ${state.questionSuit!.label}'
++                          : 'Draw pile: ${state.drawPile.length}',
++          style: const TextStyle(color: Colors.white70),
++        ),
++        const SizedBox(height: 18),
++        if (top != null)
++          PlayingCardWidget(card: top)
++        else
++          const Text('No card yet', style: TextStyle(color: Colors.white70)),
++        const SizedBox(height: 18),
++        Text(
++          state.clockwise ? 'Clockwise' : 'Counter clockwise',
++          style: const TextStyle(color: Colors.white54),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildActionBar(GameState state, KadiPlayer me, bool isMyTurn) {
+     return Container(
+-      width: 100,
+-      height: 140,
+-      decoration: BoxDecoration(
+-        color: Colors.white,
+-        borderRadius: BorderRadius.circular(12),
+-        boxShadow: const [
+-          BoxShadow(color: Colors.black38, blurRadius: 6, offset: Offset(2, 2)),
+-        ],
+-      ),
+-      child: Center(
+-        child: Text(
+-          "$rank\n$suit",
+-          textAlign: TextAlign.center,
+-          style: const TextStyle(
+-            fontSize: 22,
+-            color: Colors.black,
+-            fontWeight: FontWeight.bold,
++      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
++      color: Colors.black.withOpacity(0.2),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        mainAxisSize: MainAxisSize.min,
++        children: [
++          HandWidget(
++            cards: me.hand,
++            onPlayTap: isMyTurn ? (card) => _handlePlayCard(card, state) : null,
+           ),
+-        ),
++          const SizedBox(height: 12),
++          Wrap(
++            alignment: WrapAlignment.center,
++            spacing: 12,
++            runSpacing: 12,
++            children: [
++              ElevatedButton.icon(
++                icon: const Icon(Icons.download),
++                label: const Text('Draw'),
++                onPressed: isMyTurn ? () => _svc.drawCard(widget.roomCode) : null,
++              ),
++              ElevatedButton.icon(
++                icon: const Icon(Icons.block),
++                label: const Text('Pass'),
++                onPressed: isMyTurn ? () => _svc.passTurn(widget.roomCode) : null,
++              ),
++              if (state.nikoPending.contains(me.uid) &&
++                  !state.nikoDeclared.contains(me.uid))
++                ElevatedButton(
++                  style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
++                  onPressed: () => _svc.declareNikoKadi(widget.roomCode),
++                  child: const Text('Declare Niko Kadi'),
++                ),
++            ],
++          ),
++          const SizedBox(height: 12),
++          SizedBox(
++            height: 90,
++            child: ListView(
++              reverse: true,
++              children: state.eventLog.reversed
++                  .map(
++                    (e) => Padding(
++                      padding: const EdgeInsets.symmetric(vertical: 2),
++                      child: Text(
++                        e,
++                        style: const TextStyle(color: Colors.white60, fontSize: 12),
++                      ),
++                    ),
++                  )
++                  .toList(),
++            ),
++          ),
++        ],
+       ),
+     );
+   }
+ 
+-  Widget _buildPlayerHand(List<Map<String, dynamic>> players) {
+-    final me = players.firstWhere(
+-      (p) => p['uid'] == _svc.uid,
+-      orElse: () => {},
++  Future<void> _handlePlayCard(KadiCard card, GameState state) async {
++    Suit? chosenSuit;
++    Rank? requestedRank;
++
++    if (card.isAce) {
++      if (card.isAceOfSpades) {
++        final selection = await _chooseAceOfSpadesOption();
++        if (selection == null) {
++          return;
++        }
++        chosenSuit = selection.suit;
++        requestedRank = selection.rank;
++      } else {
++        chosenSuit = await _chooseSuit();
++        if (chosenSuit == null) {
++          return;
++        }
++      }
++    }
++
++    _svc.playCard(
++      code: widget.roomCode,
++      card: card,
++      chosenSuit: chosenSuit,
++      requestedRank: requestedRank,
+     );
+-    final hand = List<Map<String, dynamic>>.from(me['hand'] ?? []);
+-    return Container(
+-      height: 130,
+-      padding: const EdgeInsets.symmetric(horizontal: 10),
+-      child: ListView.separated(
+-        scrollDirection: Axis.horizontal,
+-        itemCount: hand.length,
+-        separatorBuilder: (_, __) => const SizedBox(width: 8),
+-        itemBuilder: (context, i) {
+-          final card = hand[i];
+-          return GestureDetector(
+-            onTap: () async {
+-              await _svc.playCard(code: widget.roomCode, card: card);
+-            },
+-            child: _buildCard(card),
+-          );
+-        },
++  }
++
++  Future<Suit?> _chooseSuit() async {
++    return showDialog<Suit>(
++      context: context,
++      builder: (context) => SimpleDialog(
++        title: const Text('Choose a suit'),
++        children: Suit.values
++            .where((s) => s != Suit.joker)
++            .map(
++              (s) => SimpleDialogOption(
++                onPressed: () => Navigator.pop(context, s),
++                child: Text(s.label),
++              ),
++            )
++            .toList(),
+       ),
+     );
+   }
+ 
+-  Widget _buildActionButtons() {
+-    return Row(
+-      mainAxisAlignment: MainAxisAlignment.center,
+-      children: [
+-        ElevatedButton.icon(
+-          icon: const Icon(Icons.download),
+-          label: const Text("Draw"),
+-          onPressed: () async {
+-            await _svc.drawCard(code: widget.roomCode);
+-          },
+-        ),
+-        const SizedBox(width: 20),
+-        ElevatedButton.icon(
+-          icon: const Icon(Icons.exit_to_app),
+-          label: const Text("Leave"),
+-          style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+-          onPressed: () async {
+-            await _svc.leaveRoom(widget.roomCode);
+-            if (mounted) Navigator.pop(context);
+-          },
+-        ),
+-      ],
++  Future<_AceSelection?> _chooseAceOfSpadesOption() async {
++    return showDialog<_AceSelection>(
++      context: context,
++      builder: (context) => SimpleDialog(
++        title: const Text('Ace of Spades'),
++        children: [
++          const Padding(
++            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
++            child: Text('Choose a suit to switch or request a rank.'),
++          ),
++          ...Suit.values
++              .where((s) => s != Suit.joker)
++              .map(
++                (s) => SimpleDialogOption(
++                  onPressed: () => Navigator.pop(context, _AceSelection(suit: s)),
++                  child: Text('Change suit to ${s.label}'),
++                ),
++              ),
++          const Divider(),
++          ...Rank.values
++              .where((r) => r != Rank.joker)
++              .map(
++                (r) => SimpleDialogOption(
++                  onPressed: () => Navigator.pop(context, _AceSelection(rank: r)),
++                  child: Text('Request ${r.label}'),
++                ),
++              ),
++        ],
++      ),
+     );
+   }
+ 
+-  Widget _buildWinnerView(String winner) {
++  Widget _buildWinnerView(String winnerName) {
+     return Center(
+       child: Column(
+         mainAxisAlignment: MainAxisAlignment.center,
+         children: [
+-          const Icon(Icons.emoji_events, size: 100, color: Colors.amber),
++          const Icon(Icons.emoji_events, size: 96, color: Colors.amber),
+           const SizedBox(height: 20),
+           Text(
+-            "$winner Wins!",
++            '$winnerName wins!',
+             style: const TextStyle(
+               fontSize: 28,
+               color: Colors.white,
+               fontWeight: FontWeight.bold,
+             ),
+           ),
+-          const SizedBox(height: 40),
++          const SizedBox(height: 32),
+           ElevatedButton(
+-            onPressed: () => Navigator.pop(context),
+-            child: const Text("Back to Lobby"),
++            onPressed: () => Navigator.of(context).maybePop(),
++            child: const Text('Back to lobby'),
+           ),
+         ],
+       ),
+     );
+   }
+-}
+\ No newline at end of file
++}
++
++class _AceSelection {
++  final Suit? suit;
++  final Rank? rank;
++
++  const _AceSelection({this.suit, this.rank}) : assert(suit != null || rank != null);
++}
+diff --git a/lib/ui/screens/game_screen.dart b/lib/ui/screens/game_screen.dart
+deleted file mode 100644
+index 3054e12d568f54b169369499839d2418549aeb56..0000000000000000000000000000000000000000
+--- a/lib/ui/screens/game_screen.dart
++++ /dev/null
+@@ -1,77 +0,0 @@
+-body: Container(
+-  decoration: const BoxDecoration(
+-    gradient: LinearGradient(
+-      colors: [Color(0xFF2E7D32), Color(0xFF1B5E20)],
+-      begin: Alignment.topCenter,
+-      end: Alignment.bottomCenter,
+-    ),
+-  ),
+-  child: Column(
+-    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+-    children: [
+-      Padding(
+-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+-        child: Row(
+-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+-          children: [
+-            Text("${widget.playerName}'s turn",
+-                style: const TextStyle(
+-                    color: Colors.white,
+-                    fontWeight: FontWeight.bold,
+-                    fontSize: 16)),
+-            const CircularProgressIndicator(
+-              color: Colors.amber,
+-              strokeWidth: 2,
+-            ),
+-          ],
+-        ),
+-      ),
+-      Expanded(
+-        child: Center(
+-          child: Column(
+-            mainAxisAlignment: MainAxisAlignment.center,
+-            children: [
+-              Card(
+-                elevation: 8,
+-                color: Colors.white70,
+-                child: SizedBox(
+-                    height: 140,
+-                    width: 100,
+-                    child: Center(
+-                        child: Text(
+-                      "5♦️",
+-                      style: TextStyle(
+-                          fontSize: 28, color: Colors.red.shade700),
+-                    ))),
+-              ),
+-              const SizedBox(height: 20),
+-              ElevatedButton(
+-                onPressed: () {},
+-                style: ElevatedButton.styleFrom(
+-                    backgroundColor: Colors.amber,
+-                    foregroundColor: Colors.black,
+-                    shape: RoundedRectangleBorder(
+-                        borderRadius: BorderRadius.circular(8))),
+-                child: const Text("Draw Card"),
+-              ),
+-              const SizedBox(height: 20),
+-              Text("Draw Pile: 46",
+-                  style: const TextStyle(color: Colors.white70)),
+-            ],
+-          ),
+-        ),
+-      ),
+-      Container(
+-        padding: const EdgeInsets.all(16),
+-        color: Colors.black26,
+-        child: Row(
+-          mainAxisAlignment: MainAxisAlignment.center,
+-          children: const [
+-            Text("Player hand goes here",
+-                style: TextStyle(color: Colors.white54)),
+-          ],
+-        ),
+-      ),
+-    ],
+-  ),
+-),
+\ No newline at end of file
+diff --git a/lib/ui/screens/home_menu_screen.dart b/lib/ui/screens/home_menu_screen.dart
+index b0837a6e7750baabc3ee717f2c846623f8cbac48..b29ce8e7270fd7a7980fee81051b304906486667 100644
+--- a/lib/ui/screens/home_menu_screen.dart
++++ b/lib/ui/screens/home_menu_screen.dart
+@@ -1,66 +1,66 @@
+ import 'package:flutter/material.dart';
+ 
+ class HomeMenuScreen extends StatelessWidget {
+   const HomeMenuScreen({super.key});
+ 
+   @override
+   Widget build(BuildContext context) {
+     return Scaffold(
+       appBar: AppBar(title: const Text('KADI MENU')),
+       body: Center(
+         child: Column(
+           mainAxisAlignment: MainAxisAlignment.center,
+           children: [
+             ElevatedButton.icon(
+               icon: const Icon(Icons.play_arrow),
+               label: const Text('Start Game'),
+               style: ElevatedButton.styleFrom(
+                 backgroundColor: Colors.green,
+                 padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+                 textStyle: const TextStyle(fontSize: 20),
+               ),
+               onPressed: () {
+-                Navigator.pushNamed(context, '/game');
++                Navigator.pushNamed(context, '/lobby');
+               },
+             ),
+             const SizedBox(height: 20),
+             ElevatedButton.icon(
+               icon: const Icon(Icons.info_outline),
+               label: const Text('Rules'),
+               style: ElevatedButton.styleFrom(
+                 backgroundColor: Colors.teal,
+                 padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+                 textStyle: const TextStyle(fontSize: 20),
+               ),
+               onPressed: () {
+                 showDialog(
+                   context: context,
+                   builder: (context) => AlertDialog(
+                     title: const Text('How to Play Kadi'),
+                     content: const SingleChildScrollView(
+                       child: Text(
+                         '🎯 Goal: Be the first to discard all cards.\n\n'
+                         '🃏 Match suit or rank to play.\n'
+                         '2 = Pick 2, 3 = Pick 3, Joker = Pick 5.\n'
+                         'A cancels penalties or changes pattern.\n'
+                         'K reverses play. J jumps next player.\n'
+                         'Say “Niko Kadi!” when one ordinary card remains.\n\n'
+                         'Fail to say it before next play — you lose!',
+                       ),
+                     ),
+                     actions: [
+                       TextButton(
+                         onPressed: () => Navigator.pop(context),
+                         child: const Text('Close'),
+                       ),
+                     ],
+                   ),
+                 );
+               },
+             ),
+           ],
+         ),
+       ),
+     );
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/ui/screens/splash_screen.dart b/lib/ui/screens/splash_screen.dart
+index a52a2ccf6c856789d96bd73f6b7cf29d4cb4b88b..3552dfc6b111cf3193403e2f3d65bd0602ec19fc 100644
+--- a/lib/ui/screens/splash_screen.dart
++++ b/lib/ui/screens/splash_screen.dart
+@@ -90,40 +90,40 @@ class _SplashScreenState extends State<SplashScreen>
+                     const SizedBox(height: 20),
+                     const Text(
+                       "KADI",
+                       style: TextStyle(
+                         color: Color(0xFFD32F2F),
+                         fontSize: 38,
+                         fontWeight: FontWeight.bold,
+                         letterSpacing: 5,
+                       ),
+                     ),
+                     const SizedBox(height: 10),
+                     Container(
+                       width: 60,
+                       height: 3,
+                       color: Colors.amberAccent,
+                     ),
+                   ],
+                 ),
+               ),
+               // Footer text
+               const Positioned(
+                 bottom: 40,
+                 left: 0,
+                 right: 0,
+                 child: Text(
+-                  © 2025  Kinami LLC. All rights reserved",
++                  '© 2025 Kinami LLC. All rights reserved',
+                   textAlign: TextAlign.center,
+                   style: TextStyle(
+                     color: Colors.white70,
+                     fontSize: 13,
+                   ),
+                 ),
+               ),
+             ],
+           ),
+         ),
+       ),
+     );
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/ui/widgets/card_widget.dart b/lib/ui/widgets/card_widget.dart
+index 432bfda0b6b3b808b868cdac9fff15da21d0e6ea..7c97253fe8e6471a4b5b36862f36a5a1c932bb3f 100644
+--- a/lib/ui/widgets/card_widget.dart
++++ b/lib/ui/widgets/card_widget.dart
+@@ -1,47 +1,87 @@
+ import 'package:flutter/material.dart';
+-import '../../models/card_model.dart';
++
++import '../../models/kadi_card.dart';
+ 
+ class KadiCardWidget extends StatelessWidget {
+   final KadiCard card;
+   final bool faceUp;
+   final VoidCallback? onTap;
+ 
+   const KadiCardWidget({
+     super.key,
+     required this.card,
+     this.faceUp = true,
+     this.onTap,
+   });
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final color = faceUp ? (card.isJoker ? Colors.deepPurple : card.suitColor) : Colors.blueGrey.shade700;
++    final borderColor =
++        faceUp ? (card.isJoker ? Colors.deepPurple : _suitColor(card.suit)) : Colors.blueGrey.shade700;
+     return GestureDetector(
+       onTap: onTap,
+       child: Container(
+         width: 64,
+         height: 92,
+         padding: const EdgeInsets.all(6),
+         decoration: BoxDecoration(
+           color: faceUp ? Colors.white : Colors.blueGrey,
+           borderRadius: BorderRadius.circular(8),
+-          boxShadow: const [BoxShadow(blurRadius: 4, offset: Offset(0,2), color: Colors.black26)],
+-          border: Border.all(color: color, width: 2),
++          boxShadow: const [BoxShadow(blurRadius: 4, offset: Offset(0, 2), color: Colors.black26)],
++          border: Border.all(color: borderColor, width: 2),
+         ),
+         child: faceUp
+             ? Column(
+                 crossAxisAlignment: CrossAxisAlignment.start,
+                 children: [
+-                  Text(card.rank, style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 18)),
++                  Text(
++                    card.rank.label,
++                    style: TextStyle(
++                      fontWeight: FontWeight.bold,
++                      color: borderColor,
++                      fontSize: 18,
++                    ),
++                  ),
+                   const Spacer(),
+                   Align(
+                     alignment: Alignment.bottomRight,
+-                    child: Text(card.suitSymbol, style: TextStyle(fontSize: 22, color: color)),
+-                  )
++                    child: Text(
++                      _suitSymbol(card.suit),
++                      style: TextStyle(fontSize: 22, color: borderColor),
++                    ),
++                  ),
+                 ],
+               )
+             : Center(child: Text('KADI', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
+       ),
+     );
+   }
+-}
+\ No newline at end of file
++}
++
++Color _suitColor(Suit suit) {
++  switch (suit) {
++    case Suit.hearts:
++    case Suit.diamonds:
++      return Colors.red.shade400;
++    case Suit.clubs:
++    case Suit.spades:
++      return Colors.black87;
++    case Suit.joker:
++      return Colors.deepPurple;
++  }
++}
++
++String _suitSymbol(Suit suit) {
++  switch (suit) {
++    case Suit.hearts:
++      return '♥';
++    case Suit.diamonds:
++      return '♦';
++    case Suit.clubs:
++      return '♣';
++    case Suit.spades:
++      return '♠';
++    case Suit.joker:
++      return '🃏';
++  }
++}
+diff --git a/lib/ui/widgets/hand_widget.dart b/lib/ui/widgets/hand_widget.dart
+index d9b86ba2251212271011e153f028503e30be6ffa..69199b401c18f4f6afb4368cc258078e017a6ce1 100644
+--- a/lib/ui/widgets/hand_widget.dart
++++ b/lib/ui/widgets/hand_widget.dart
+@@ -1,35 +1,35 @@
+ import 'package:flutter/material.dart';
+-import '../../models/card_model.dart';
++import '../../models/kadi_card.dart';
+ import 'card_widget.dart';
+ 
+ class HandWidget extends StatelessWidget {
+   final List<KadiCard> cards;
+   final bool faceUp;
+   final void Function(KadiCard)? onPlayTap;
+ 
+   const HandWidget({
+     super.key,
+     required this.cards,
+     this.faceUp = true,
+     this.onPlayTap,
+   });
+ 
+   @override
+   Widget build(BuildContext context) {
+     return SingleChildScrollView(
+       scrollDirection: Axis.horizontal,
+       child: Row(
+         children: cards.map((c) {
+           return Padding(
+             padding: const EdgeInsets.symmetric(horizontal: 4),
+             child: KadiCardWidget(
+               card: c,
+               faceUp: faceUp,
+               onTap: onPlayTap != null ? () => onPlayTap!(c) : null,
+             ),
+           );
+         }).toList(),
+       ),
+     );
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/ui/widgets/playing_card_widget.dart b/lib/ui/widgets/playing_card_widget.dart
+index bb85a2dde372bf447d6fd0bd062b872d7220146d..c500ee8e7c7e58e12734a19eacef4c014fca8c34 100644
+--- a/lib/ui/widgets/playing_card_widget.dart
++++ b/lib/ui/widgets/playing_card_widget.dart
+@@ -18,26 +18,26 @@ class PlayingCardWidget extends StatelessWidget {
+     return Container(
+       width: Layout.cardWidth,
+       height: Layout.cardHeight,
+       decoration: BoxDecoration(
+         color: faceUp ? Colors.white : AppColors.cardBack,
+         borderRadius: BorderRadius.circular(Layout.cardRadius),
+         border: Border.all(color: Colors.black26),
+         boxShadow: const [BoxShadow(blurRadius: 6, spreadRadius: 1, color: Colors.black26)],
+       ),
+       alignment: Alignment.center,
+       child: faceUp
+           ? Column(
+               mainAxisAlignment: MainAxisAlignment.center,
+               children: [
+                 Text(
+                   card.rank.label,
+                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
+                 ),
+                 const SizedBox(height: 6),
+                 Text(card.suit.label, style: const TextStyle(fontSize: 12)),
+               ],
+             )
+           : const Icon(Icons.style, color: Colors.white),
+     );
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/utils/card_deck.dart b/lib/utils/card_deck.dart
+deleted file mode 100644
+index fce0464f948e4e3f3e21491ab2dbb07c09d09674..0000000000000000000000000000000000000000
+--- a/lib/utils/card_deck.dart
++++ /dev/null
+@@ -1,67 +0,0 @@
+-import 'dart:math';
+-import '../models/card_model.dart';
+-import '../models/player_model.dart';
+-import '../models/game_state.dart';
+-
+-List<PlayingCard> generateStandardDeck() {
+-  const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+-  final deck = <PlayingCard>[];
+-
+-  for (final suit in [
+-    Suit.hearts,
+-    Suit.diamonds,
+-    Suit.clubs,
+-    Suit.spades,
+-  ]) {
+-    for (final rank in ranks) {
+-      deck.add(PlayingCard(suit, rank));
+-    }
+-  }
+-
+-  // Add 2 Jokers
+-  deck.add(PlayingCard(Suit.joker, 'JOKER'));
+-  deck.add(PlayingCard(Suit.joker, 'JOKER'));
+-  return deck;
+-}
+-
+-void shuffleDeck(List<PlayingCard> deck) {
+-  deck.shuffle(Random());
+-}
+-
+-bool _isInvalidStartCard(PlayingCard card) {
+-  // Kadi rules: cannot start with 2,3,J,Q,K,8,A or Jokers
+-  if (card.isJoker) return true;
+-  const invalidRanks = {'2', '3', 'J', 'Q', 'K', '8', 'A'};
+-  return invalidRanks.contains(card.rank);
+-}
+-
+-GameState dealCards(List<String> playerNames) {
+-  final deck = generateStandardDeck();
+-  shuffleDeck(deck);
+-
+-  final numPlayers = playerNames.length;
+-  final cardsPerPlayer = numPlayers > 4 ? 3 : 4;
+-
+-  final players = <Player>[];
+-  for (final name in playerNames) {
+-    final hand = deck.take(cardsPerPlayer).toList();
+-    deck.removeRange(0, cardsPerPlayer);
+-    players.add(Player(uid: name, name: name, hand: hand));
+-  }
+-
+-  // Find valid starting card
+-  PlayingCard firstCard;
+-  do {
+-    firstCard = deck.removeAt(0);
+-    if (!_isInvalidStartCard(firstCard)) break;
+-    deck.add(firstCard);
+-  } while (true);
+-
+-  return GameState(
+-    players: players,
+-    turnIndex: 0,
+-    deck: deck,
+-    discardPile: [firstCard],
+-    gameStatus: 'waiting',
+-  );
+-}
+\ No newline at end of file
+diff --git a/lib/widgets/discard_pile_widget.dart b/lib/widgets/discard_pile_widget.dart
+index 3b6bce6c55d6de9fcaf4eaff21f0227cac86f369..883928997e1c5d871a20953e139239e0595f5605 100644
+--- a/lib/widgets/discard_pile_widget.dart
++++ b/lib/widgets/discard_pile_widget.dart
+@@ -1,51 +1,52 @@
+ import 'package:flutter/material.dart';
+-import 'package:kadi/models/card_model.dart';
+-import 'package:kadi/widgets/playing_card_widget.dart';
++
++import '../models/kadi_card.dart';
++import '../ui/widgets/playing_card_widget.dart';
+ 
+ /// Shows the last three cards slightly fanned, top-most is the actual top.
+ class DiscardPileWidget extends StatelessWidget {
+-  final List<PlayingCard> cards;
++  final List<KadiCard> cards;
+ 
+   const DiscardPileWidget({super.key, required this.cards});
+ 
+   @override
+   Widget build(BuildContext context) {
+     if (cards.isEmpty) return _emptyPile();
+ 
+     final visible = cards.length > 3 ? cards.sublist(cards.length - 3) : cards;
+     return SizedBox(
+       width: 120,
+       height: 120,
+       child: Stack(
+         alignment: Alignment.center,
+         children: List.generate(visible.length, (i) {
+           // spread them a bit
+           final dx = (i - (visible.length - 1) / 2) * 18.0;
+           final angle = (i - (visible.length - 1) / 2) * 0.06;
+           return Transform.translate(
+             offset: Offset(dx, -dx / 3),
+             child: Transform.rotate(
+               angle: angle,
+               child: PlayingCardWidget(card: visible[i]),
+             ),
+           );
+         }),
+       ),
+     );
+   }
+ 
+   Widget _emptyPile() => Container(
+         width: 70,
+         height: 100,
+         decoration: BoxDecoration(
+           color: Colors.green[900],
+           borderRadius: BorderRadius.circular(8),
+           border: Border.all(color: Colors.white54, width: 2),
+         ),
+         alignment: Alignment.center,
+         child: const Text(
+           'No Cards',
+           style: TextStyle(color: Colors.white70),
+         ),
+       );
+-}
+\ No newline at end of file
++}
+diff --git a/lib/widgets/hand_widget.dart b/lib/widgets/hand_widget.dart
+deleted file mode 100644
+index c2fb8172b483c0f11f5b36e8473b7084c4277a3c..0000000000000000000000000000000000000000
+--- a/lib/widgets/hand_widget.dart
++++ /dev/null
+@@ -1,76 +0,0 @@
+-import 'dart:async';
+-import 'package:flutter/material.dart';
+-import '../utils/constants.dart';
+-
+-class TurnTimerWidget extends StatefulWidget {
+-  final Duration duration;
+-  final VoidCallback onTimeout;
+-  final bool isRunning;
+-
+-  const TurnTimerWidget({
+-    super.key,
+-    required this.duration,
+-    required this.onTimeout,
+-    required this.isRunning,
+-  });
+-
+-  @override
+-  State<TurnTimerWidget> createState() => _TurnTimerWidgetState();
+-}
+-
+-class _TurnTimerWidgetState extends State<TurnTimerWidget>
+-    with SingleTickerProviderStateMixin {
+-  late AnimationController _controller;
+-  Timer? _tick;
+-
+-  @override
+-  void initState() {
+-    super.initState();
+-    _controller = AnimationController(vsync: this, duration: widget.duration);
+-  }
+-
+-  @override
+-  void didUpdateWidget(TurnTimerWidget old) {
+-    super.didUpdateWidget(old);
+-    if (widget.isRunning && !old.isRunning) {
+-      _start();
+-    } else if (!widget.isRunning && old.isRunning) {
+-      _controller.reset();
+-      _tick?.cancel();
+-    }
+-  }
+-
+-  void _start() {
+-    _controller.forward(from: 0);
+-    _tick?.cancel();
+-    _tick = Timer(widget.duration, widget.onTimeout);
+-  }
+-
+-  @override
+-  void dispose() {
+-    _controller.dispose();
+-    _tick?.cancel();
+-    super.dispose();
+-  }
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    return SizedBox(
+-      width: 36,
+-      height: 36,
+-      child: AnimatedBuilder(
+-        animation: _controller,
+-        builder: (_, __) {
+-          return CircularProgressIndicator(
+-            strokeWidth: 4,
+-            value: 1.0 - _controller.value,
+-            backgroundColor: Colors.white10,
+-            valueColor: AlwaysStoppedAnimation<Color>(
+-              widget.isRunning ? AppColors.highlight : Colors.white30,
+-            ),
+-          );
+-        },
+-      ),
+-    );
+-  }
+-}
+\ No newline at end of file
+diff --git a/lib/widgets/player_avatar_widget.dart b/lib/widgets/player_avatar_widget.dart
+index da17e622531a10f49ef535d6e3a64ea4b9560daa..4e7e7e0dbd0680366c864c2304e34ab49b67712d 100644
+--- a/lib/widgets/player_avatar_widget.dart
++++ b/lib/widgets/player_avatar_widget.dart
+@@ -1,47 +1,49 @@
+ import 'package:flutter/material.dart';
+-import '../models/player_model.dart';
++import '../models/kadi_player.dart';
+ 
+ class PlayerAvatarWidget extends StatelessWidget {
+-  final Player player;
++  final KadiPlayer player;
+   final bool isCurrentTurn;
+   final bool isLocalPlayer;
+ 
+   const PlayerAvatarWidget({
+     super.key,
+     required this.player,
+     this.isCurrentTurn = false,
+     this.isLocalPlayer = false,
+   });
+ 
+   @override
+   Widget build(BuildContext context) {
+     final borderColor =
+         isCurrentTurn ? Colors.yellowAccent : Colors.white.withOpacity(0.8);
+     return Column(
+       children: [
+         Container(
+           decoration: BoxDecoration(
+             shape: BoxShape.circle,
+             border: Border.all(color: borderColor, width: 3),
+           ),
+           child: CircleAvatar(
+             radius: 25,
+             backgroundColor: isLocalPlayer ? Colors.blueAccent : Colors.grey[700],
+             child: Text(
+-              player.name.substring(0, 1).toUpperCase(),
++              player.name.isNotEmpty ? player.name.substring(0, 1).toUpperCase() : '?',
+               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+             ),
+           ),
+         ),
+         const SizedBox(height: 6),
+         Text(
+           player.name,
+           style: const TextStyle(fontSize: 14),
+         ),
+         if (!isLocalPlayer)
+-          Text("${player.hand.length} cards",
+-              style: const TextStyle(fontSize: 12, color: Colors.white70)),
++          Text(
++            "${player.hand.length} cards",
++            style: const TextStyle(fontSize: 12, color: Colors.white70),
++          ),
+       ],
+     );
+   }
+-}
+\ No newline at end of file
++}
+ 
+EOF
+)

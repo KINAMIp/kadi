@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import '../models/player_model.dart';
+import '../models/kadi_player.dart';
 
 class PlayerAvatarWidget extends StatelessWidget {
-  final Player player;
+  final KadiPlayer player;
   final bool isCurrentTurn;
   final bool isLocalPlayer;
 
@@ -28,7 +28,7 @@ class PlayerAvatarWidget extends StatelessWidget {
             radius: 25,
             backgroundColor: isLocalPlayer ? Colors.blueAccent : Colors.grey[700],
             child: Text(
-              player.name.substring(0, 1).toUpperCase(),
+              player.name.isNotEmpty ? player.name.substring(0, 1).toUpperCase() : '?',
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
           ),
@@ -40,7 +40,10 @@ class PlayerAvatarWidget extends StatelessWidget {
         ),
         if (!isLocalPlayer)
           Text("${player.hand.length} cards",
-              style: const TextStyle(fontSize: 12, color: Colors.white70)),
+          Text(
+            "${player.hand.length} cards",
+            style: const TextStyle(fontSize: 12, color: Colors.white70),
+          ),
       ],
     );
   }

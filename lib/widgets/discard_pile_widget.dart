@@ -1,10 +1,11 @@
-import 'package:flutter/material.dart';
-import 'package:kadi/models/card_model.dart';
-import 'package:kadi/widgets/playing_card_widget.dart';
+import 'package:flutter/material.dart';;
+
+import '../models/kadi_card.dart';
+import '../ui/widgets/playing_card_widget.dart';
 
 /// Shows the last three cards slightly fanned, top-most is the actual top.
 class DiscardPileWidget extends StatelessWidget {
-  final List<PlayingCard> cards;
+  final List<KadiCard> cards;
 
   const DiscardPileWidget({super.key, required this.cards});
 

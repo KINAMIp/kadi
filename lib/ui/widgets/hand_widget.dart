@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../models/card_model.dart';
+import '../../models/kadi_card.dart';
 import 'card_widget.dart';
 
 class HandWidget extends StatelessWidget {
