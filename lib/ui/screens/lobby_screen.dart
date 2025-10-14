@@ -46,10 +46,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
           // Content
           SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                children: [
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(20.0),
+                  child: Column(
+                    children: [
                   // Header row
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -78,7 +81,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                         ],
                       ),
                       Image.asset(
-                        'assets/images/nk_logo.png',
+                        'assets/images/logo.jpg',
                         width: 40,
                         height: 40,
                       ),
@@ -109,14 +112,34 @@ class _LobbyScreenState extends State<LobbyScreen> {
                         TextField(
                           controller: _nicknameController,
                           textCapitalization: TextCapitalization.words,
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.w600,
+                          ),
                           decoration: InputDecoration(
+                            labelText: 'Nickname',
                             hintText: "Enter your nickname",
+                            prefixIcon: const Icon(Icons.badge_outlined),
                             filled: true,
                             fillColor: Colors.white,
                             contentPadding:
                                 const EdgeInsets.symmetric(horizontal: 16),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(
+                                color: Color(0xFFB71C1C),
+                                width: 1.2,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(
+                                color: Color(0xFFD32F2F),
+                                width: 1.6,
+                              ),
                             ),
                           ),
                         ),
@@ -191,19 +214,40 @@ class _LobbyScreenState extends State<LobbyScreen> {
                         TextField(
                           controller: _roomCodeController,
                           textCapitalization: TextCapitalization.characters,
+                          style: const TextStyle(
+                            letterSpacing: 3,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                          ),
                           inputFormatters: [
                             FilteringTextInputFormatter.allow(
                               RegExp(r'[A-Za-z0-9]'),
                             ),
                           ],
                           decoration: InputDecoration(
+                            labelText: 'Room code',
                             hintText: "Enter invitation code",
+                            prefixIcon: const Icon(Icons.meeting_room_outlined),
                             filled: true,
                             fillColor: Colors.white,
                             contentPadding:
                                 const EdgeInsets.symmetric(horizontal: 16),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(
+                                color: Color(0xFFB71C1C),
+                                width: 1.2,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(
+                                color: Color(0xFFD32F2F),
+                                width: 1.6,
+                              ),
                             ),
                           ),
                         ),
@@ -241,7 +285,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
                       ],
                     ),
                   ),
-                ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),

@@ -40,6 +40,14 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
       body: StreamBuilder<GameState>(
         stream: _svc.watchRoom(widget.roomCode),
         builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Text(
+                'Connection error: ${snapshot.error}',
+                textAlign: TextAlign.center,
+              ),
+            );
+          }
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }

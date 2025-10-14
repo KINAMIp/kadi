@@ -82,7 +82,7 @@ class _SplashScreenState extends State<SplashScreen>
                   children: [
                     // Fade-in card logo
                     Image.asset(
-                      'assets/images/aces.png',
+                      'assets/images/logo.jpg',
                       width: 140,
                       height: 140,
                       fit: BoxFit.contain,
