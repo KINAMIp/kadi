@@ -321,9 +321,9 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
             child: const Text('Back to lobby'),
           ),
         ],
+      ),
     );
   }
-}
 }
 
 class _AceSelection {
