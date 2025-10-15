@@ -1261,25 +1261,10 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
   }
 
   bool _shouldPromptNiko(KadiPlayer me) {
-    final allowedRanks = {
-      Rank.four,
-      Rank.five,
-      Rank.six,
-      Rank.seven,
-      Rank.nine,
-      Rank.ten,
-    };
     if (me.hand.isEmpty) {
       return false;
     }
-    if (me.hand.length == 1) {
-      return true;
-    }
-    final firstRank = me.hand.first.rank;
-    if (!allowedRanks.contains(firstRank)) {
-      return false;
-    }
-    return me.hand.every((card) => card.rank == firstRank);
+    return me.hand.every((card) => card.isOrdinary);
   }
 
   Future<void> _handlePlayCard(KadiCard card, GameState state) async {
@@ -1302,23 +1287,18 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
       }
       return;
     }
-    Suit? chosenSuit;
     Rank? requestedRank;
     Suit? requestedCardSuit;
 
     if (card.isAce) {
       if (card.isAceOfSpades) {
-        final selection = await _chooseAceOfSpadesOption();
-        if (selection == null) {
-          return;
-        }
-        chosenSuit = selection.suit;
-        requestedRank = selection.rank;
-        requestedCardSuit = selection.rankSuit;
-      } else {
-        chosenSuit = await _chooseSuit();
-        if (chosenSuit == null) {
-          return;
+        if (state.pendingDraw == 0) {
+          final request = await _promptAceRequest();
+          if (request == null) {
+            return;
+          }
+          requestedRank = request.rank;
+          requestedCardSuit = request.suit;
         }
       }
     }
@@ -1326,77 +1306,13 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
     _svc.playCard(
       code: widget.roomCode,
       card: card,
-      chosenSuit: chosenSuit,
+      chosenSuit: null,
       requestedRank: requestedRank,
       requestedCardSuit: requestedCardSuit,
     );
   }
 
-  Future<Suit?> _chooseSuit() async {
-    return showDialog<Suit>(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('Choose a suit'),
-        children: Suit.values
-            .where((s) => s != Suit.joker)
-            .map(
-              (s) => SimpleDialogOption(
-                onPressed: () => Navigator.pop(context, s),
-                child: Text(s.label),
-              ),
-            )
-            .toList(),
-      ),
-    );
-  }
-
-  Future<_AceSelection?> _chooseAceOfSpadesOption() async {
-    const requestSpecificToken = Object();
-    final result = await showDialog<Object?>(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('Ace of Spades'),
-        children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Text('Choose how to use the Ace of Spades.'),
-          ),
-          ...Suit.values
-              .where((s) => s != Suit.joker)
-              .map(
-                (s) => SimpleDialogOption(
-                  onPressed: () => Navigator.pop(context, _AceSelection(suit: s)),
-                  child: Text('Change suit to ${s.label}'),
-                ),
-              ),
-          const Divider(),
-          ...Rank.values
-              .where((r) => r != Rank.joker)
-              .map(
-                (r) => SimpleDialogOption(
-                  onPressed: () => Navigator.pop(context, _AceSelection(rank: r)),
-                  child: Text('Request ${r.label}'),
-                ),
-              ),
-          const Divider(),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, requestSpecificToken),
-            child: const Text('Request a specific card'),
-          ),
-        ],
-      ),
-    );
-
-    if (result is _AceSelection) {
-      return result;
-    }
-    if (result == requestSpecificToken) {
-      return _chooseSpecificCard();
-    }
-    return null;
-  }
-
-  Future<_AceSelection?> _chooseSpecificCard() async {
+  Future<_AceRequest?> _promptAceRequest() async {
     final rank = await showDialog<Rank>(
       context: context,
       builder: (context) => SimpleDialog(
@@ -1430,7 +1346,7 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
       ),
     );
     if (suit == null) return null;
-    return _AceSelection(rank: rank, rankSuit: suit);
+    return _AceRequest(rank: rank, suit: suit);
   }
 
   Widget _buildWinnerView(String winnerName) {
@@ -1501,11 +1417,9 @@ extension _ColorTones on Color {
   }
 }
 
-class _AceSelection {
-  final Suit? suit;
-  final Rank? rank;
-  final Suit? rankSuit;
+class _AceRequest {
+  final Rank rank;
+  final Suit suit;
 
-  const _AceSelection({this.suit, this.rank, this.rankSuit})
-      : assert(suit != null || rank != null);
+  const _AceRequest({required this.rank, required this.suit});
 }

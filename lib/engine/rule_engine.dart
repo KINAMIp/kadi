@@ -194,9 +194,11 @@ class RuleEngine {
 
     // Suit forced by Ace change.
     if (state.forcedSuit != null && card.suit != state.forcedSuit && !card.isJoker) {
-      return RuleValidationResult.invalid(
-        'Suit forced to ${state.forcedSuit!.label}.',
-      );
+      if (!card.isAce) {
+        return RuleValidationResult.invalid(
+          'Suit forced to ${state.forcedSuit!.label}.',
+        );
+      }
     }
 
     // Ace of spades request.
@@ -210,16 +212,17 @@ class RuleEngine {
       });
       final matchesRank = card.rank == state.requestedRank;
       final matchesSuit = state.requestedCardSuit == null || card.suit == state.requestedCardSuit;
-      if (hasRequested && (!matchesRank || !matchesSuit)) {
-        final label = state.requestedCardSuit != null
-            ? '${state.requestedRank!.label} of ${state.requestedCardSuit!.label}'
-            : state.requestedRank!.label;
-        return RuleValidationResult.invalid('You were asked for $label.');
-      }
-      if (matchesRank && matchesSuit) {
+      final label = state.requestedCardSuit != null
+          ? '${state.requestedRank!.label} of ${state.requestedCardSuit!.label}'
+          : state.requestedRank!.label;
+      if (hasRequested) {
+        if (!matchesRank || !matchesSuit) {
+          return RuleValidationResult.invalid('You were asked for $label.');
+        }
         return const RuleValidationResult.valid();
       }
-      // If player does not hold requested rank fall back to normal matching.
+
+      return RuleValidationResult.invalid('You must pick because you do not have the requested $label.');
     }
 
     if (card.isJoker) {
@@ -323,13 +326,12 @@ class RuleEngine {
         );
         return result;
       }
-      if (chosenSuit != null) {
-        result = result.copyWith(
-          forcedSuit: chosenSuit,
-          skipCancelable: false,
-          clearRequestedCardSuit: true,
-        );
-      }
+      final Suit targetSuit = chosenSuit ?? card.suit;
+      result = result.copyWith(
+        forcedSuit: targetSuit,
+        skipCancelable: false,
+        clearRequestedCardSuit: true,
+      );
       return result;
     }
 
@@ -371,8 +373,8 @@ class RuleEngine {
   }
 
   static bool needsNikoCall(List<KadiCard> hand) {
-    if (hand.length != 1) return false;
-    return hand.first.isOrdinary;
+    if (hand.isEmpty) return false;
+    return hand.every((card) => card.isOrdinary);
   }
 
   static bool _isQuestionResponseForbidden(KadiCard card) {
