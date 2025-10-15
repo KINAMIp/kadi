@@ -21,16 +21,18 @@ class GameBoardScreen extends StatefulWidget {
 
 class _GameBoardScreenState extends State<GameBoardScreen> {
   final OnlineService _svc = OnlineService();
-  static const int _turnDurationSeconds = 20;
+  static const int _turnDurationSeconds = 30;
 
   late final Stream<GameState> _roomStream;
 
   Timer? _turnTimer;
   int _turnSecondsLeft = 0;
   String? _currentTurnPlayerId;
+  String? _lastTopCardId;
 
   Timer? _cancelTimer;
   String? _activeCancelCardId;
+  Rank? _activeCancelRank;
   int _cancelSecondsLeft = 0;
 
   bool _showNikoPrompt = false;
@@ -149,15 +151,28 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
         : players.length < state.maxPlayers
             ? 'Waiting for players (${players.length}/${state.maxPlayers})'
             : 'Waiting for ${hostPlayer.name} to start';
-    final subtext = isPlaying
-        ? (isMyTurn
+    String subtext;
+    final comboActive = state.comboOwnerId != null;
+    final currentIsComboOwner =
+        comboActive && current != null && current.uid == state.comboOwnerId;
+    if (isPlaying) {
+      if (currentIsComboOwner) {
+        final comboLabel = state.comboRank?.label ?? 'matching cards';
+        subtext = isMyTurn
+            ? 'Chain your $comboLabel or tap Done to pass'
+            : '${current!.name} is chaining ${state.comboRank != null ? '${state.comboRank!.label}s' : 'cards'}';
+      } else {
+        subtext = isMyTurn
             ? "It's your move!"
-            : 'You have ${me.hand.length} card${me.hand.length == 1 ? '' : 's'}')
-        : players.length < state.maxPlayers
-            ? 'Waiting for more players to join'
-            : me.uid == state.hostUid
-                ? 'Start the game when everyone is ready'
-                : 'Waiting for ${hostPlayer.name} to begin';
+            : 'You have ${me.hand.length} card${me.hand.length == 1 ? '' : 's'}';
+      }
+    } else {
+      subtext = players.length < state.maxPlayers
+          ? 'Waiting for more players to join'
+          : me.uid == state.hostUid
+              ? 'Start the game when everyone is ready'
+              : 'Waiting for ${hostPlayer.name} to begin';
+    }
     return SizedBox(
       height: 180,
       child: Stack(
@@ -595,6 +610,27 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
   Widget _buildBottomSection(GameState state, KadiPlayer me, bool isMyTurn) {
     final nikoEligible = state.nikoPending.contains(me.uid) &&
         !state.nikoDeclared.contains(me.uid);
+    final comboActive = state.comboOwnerId != null;
+    final bool iAmComboOwner = state.comboOwnerId == me.uid;
+    final Rank? comboRank = state.comboRank;
+    final bool waitingOnCombo = comboActive && !iAmComboOwner;
+    final bool canDraw = isMyTurn && !iAmComboOwner;
+    final comboOwnerName = comboActive
+        ? state.players.firstWhere(
+              (p) => p.uid == state.comboOwnerId,
+              orElse: () => KadiPlayer(
+                uid: state.comboOwnerId!,
+                name: 'Player',
+                hand: const [],
+              ),
+            ).name
+        : null;
+    final handFillColor = iAmComboOwner
+        ? const Color(0xFFFFE0B2).withOpacity(0.35)
+        : Colors.white.withOpacity(0.05);
+    final handBorderColor = iAmComboOwner
+        ? const Color(0xFFFFB74D).withOpacity(0.9)
+        : Colors.white24;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       decoration: BoxDecoration(
@@ -605,12 +641,79 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            child: iAmComboOwner
+                ? Container(
+                    key: const ValueKey('combo-owner-banner'),
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFFD54F), Color(0xFFFF8A65)],
+                      ),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black54,
+                          blurRadius: 16,
+                          offset: Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.auto_awesome,
+                            color: Colors.black87),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            comboRank != null
+                                ? 'Play your remaining ${comboRank.label}s or tap Done when you are finished.'
+                                : 'Play all identical cards or tap Done to pass the turn.',
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : waitingOnCombo && comboOwnerName != null
+                    ? Container(
+                        key: const ValueKey('combo-wait-banner'),
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          color: Colors.white.withOpacity(0.08),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.hourglass_bottom,
+                                color: Colors.white70),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Waiting for $comboOwnerName to finish their combo...',
+                                style: const TextStyle(color: Colors.white70),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+          ),
           SizedBox(
             height: 130,
             child: DecoratedBox(
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(18),
-                color: Colors.white.withOpacity(0.05),
+                color: handFillColor,
+                border: Border.all(color: handBorderColor, width: iAmComboOwner ? 2 : 1),
               ),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
@@ -644,8 +747,28 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
                   elevation: 6,
                   shadowColor: Colors.black45,
                 ),
-                onPressed: isMyTurn ? () => _svc.drawCard(widget.roomCode) : null,
+                onPressed: canDraw ? () => _svc.drawCard(widget.roomCode) : null,
               ),
+              if (iAmComboOwner)
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.done_all),
+                  label: const Text(
+                    'Done',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2E7D32),
+                    foregroundColor: Colors.white,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 26, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    elevation: 6,
+                    shadowColor: Colors.black54,
+                  ),
+                  onPressed: () => _svc.finishCombo(widget.roomCode),
+                ),
               if (nikoEligible)
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
@@ -711,14 +834,22 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
               '$_cancelSecondsLeft s',
               style: const TextStyle(color: Colors.white70),
             ),
-            const SizedBox(height: 8),
-            TextButton(
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.white,
-                backgroundColor: Colors.black38,
+            const SizedBox(height: 10),
+            Text(
+              _activeCancelRank != null
+                  ? 'Only another ${_activeCancelRank == Rank.king ? 'King' : 'Jack'} cancels this play.'
+                  : 'Only a matching card cancels this play.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
               ),
-              onPressed: _dismissCancelOverlay,
-              child: const Text('Cancel'),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Teammates must respond with the same rank.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white70, fontSize: 11),
             ),
           ],
         ),
@@ -770,8 +901,11 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
   void _handleStateSideEffects(GameState state, KadiPlayer me) {
     if (!mounted) return;
     final players = state.players;
+    final top = state.discardPile.isNotEmpty ? state.discardPile.last : null;
+    final topId = top?.id;
     if (state.gameStatus != 'playing') {
       _currentTurnPlayerId = null;
+      _lastTopCardId = null;
       _turnTimer?.cancel();
       if (_turnSecondsLeft != 0) {
         setState(() {
@@ -782,16 +916,22 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
       final newCurrentPlayerId = players.isEmpty
           ? null
           : players[state.turnIndex % players.length].uid;
-      if (newCurrentPlayerId != _currentTurnPlayerId) {
+      final hasPlayerChanged = newCurrentPlayerId != _currentTurnPlayerId;
+      if (hasPlayerChanged) {
         _currentTurnPlayerId = newCurrentPlayerId;
         _startTurnTimer();
+      } else if (topId != null &&
+          topId != _lastTopCardId &&
+          newCurrentPlayerId != null &&
+          newCurrentPlayerId == state.comboOwnerId) {
+        _startTurnTimer();
       }
+      _lastTopCardId = topId;
     }
 
-    final top = state.discardPile.isNotEmpty ? state.discardPile.last : null;
     if (top != null && (top.rank == Rank.jack || top.rank == Rank.king)) {
       if (_activeCancelCardId != top.id) {
-        _triggerCancelOverlay(top.id);
+        _triggerCancelOverlay(top);
       }
     } else if (_activeCancelCardId != null) {
       _dismissCancelOverlay();
@@ -833,11 +973,12 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
     });
   }
 
-  void _triggerCancelOverlay(String cardId) {
+  void _triggerCancelOverlay(KadiCard card) {
     _cancelTimer?.cancel();
     if (!mounted) return;
     setState(() {
-      _activeCancelCardId = cardId;
+      _activeCancelCardId = card.id;
+      _activeCancelRank = card.rank;
       _cancelSecondsLeft = 5;
     });
     _cancelTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -863,6 +1004,7 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
       setState(() {
         _cancelSecondsLeft = 0;
         _activeCancelCardId = null;
+        _activeCancelRank = null;
       });
     }
   }
@@ -890,6 +1032,25 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
   }
 
   Future<void> _handlePlayCard(KadiCard card, GameState state) async {
+    if (state.comboOwnerId != null && state.comboOwnerId != _svc.uid) {
+      return;
+    }
+    if (state.comboOwnerId == _svc.uid &&
+        state.comboRank != null &&
+        card.rank != state.comboRank) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Finish your combo with the same rank or tap Done to pass.',
+              ),
+            ),
+          );
+      }
+      return;
+    }
     Suit? chosenSuit;
     Rank? requestedRank;
     Suit? requestedCardSuit;
