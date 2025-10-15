@@ -140,15 +140,13 @@ class _LobbyScreenState extends State<LobbyScreen>
                                 blurRadius: 40,
                                 offset: const Offset(0, 24),
                               ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black
-                                      .withOpacity(0.38 + 0.1 * _glowAnimation.value),
-                                  blurRadius: 40,
-                                  offset: const Offset(0, 24),
-                                ),
-                              ],
-                            ),
+                              BoxShadow(
+                                color: Colors.black
+                                    .withOpacity(0.18 + 0.05 * _glowAnimation.value),
+                                blurRadius: 80,
+                                offset: const Offset(0, 0),
+                              ),
+                            ],
                             child: isWide
                                 ? Row(
                                     crossAxisAlignment: CrossAxisAlignment.start,
