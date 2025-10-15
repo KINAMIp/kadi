@@ -24,6 +24,7 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
   static const int _turnDurationSeconds = 30;
 
   late final Stream<GameState> _roomStream;
+  final ScrollController _eventLogController = ScrollController();
 
   Timer? _turnTimer;
   int _turnSecondsLeft = 0;
@@ -47,6 +48,7 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
   void dispose() {
     _turnTimer?.cancel();
     _cancelTimer?.cancel();
+    _eventLogController.dispose();
     super.dispose();
   }
 
@@ -433,43 +435,174 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
     final seatY = centerY + radius * math.sin(angle);
     final isMe = player.uid == myId;
     return Positioned(
-      left: seatX - 60,
-      top: seatY - 60,
-      width: 120,
+      left: seatX - 70,
+      top: seatY - 75,
+      width: 140,
       child: AnimatedScale(
-        duration: const Duration(milliseconds: 200),
-        scale: isTurn ? 1.05 : 0.95,
-        child: Column(
-          children: [
-            CircleAvatar(
-              radius: 32,
-              backgroundColor: isTurn ? Colors.amberAccent : Colors.black45,
-              child: Text(
-                player.name.isNotEmpty ? player.name[0].toUpperCase() : '?',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 20,
-                  color: isTurn ? Colors.black : Colors.white,
+        duration: const Duration(milliseconds: 240),
+        scale: isTurn ? 1.04 : 0.94,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 240),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            gradient: LinearGradient(
+              colors: isTurn
+                  ? [
+                      const Color(0xFFFFE082).withOpacity(0.95),
+                      const Color(0xFFFFAB40).withOpacity(0.85),
+                    ]
+                  : [
+                      Colors.white.withOpacity(0.16),
+                      Colors.white.withOpacity(0.05),
+                    ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            border: Border.all(
+              color: isMe
+                  ? const Color(0xFF64FFDA).withOpacity(isTurn ? 0.9 : 0.6)
+                  : (isTurn
+                      ? Colors.black.withOpacity(0.4)
+                      : Colors.white24),
+              width: isTurn ? 2.4 : 1.2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(isTurn ? 0.55 : 0.28),
+                blurRadius: isTurn ? 22 : 14,
+                offset: const Offset(0, 12),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 56,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Positioned(
+                      left: 6,
+                      top: 2,
+                      child: Transform.rotate(
+                        angle: -0.28,
+                        child: _SeatCardShadow(
+                          color: Colors.black.withOpacity(0.18),
+                          borderColor:
+                              Colors.white.withOpacity(isTurn ? 0.4 : 0.18),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      right: 4,
+                      bottom: -4,
+                      child: Transform.rotate(
+                        angle: 0.22,
+                        child: _SeatCardShadow(
+                          color: Colors.black.withOpacity(0.2),
+                          borderColor:
+                              Colors.white.withOpacity(isTurn ? 0.38 : 0.16),
+                        ),
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.center,
+                      child: Container(
+                        width: 58,
+                        height: 58,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: isTurn
+                                ? [
+                                    const Color(0xFFFFF8E1),
+                                    const Color(0xFFFFECB3),
+                                  ]
+                                : [
+                                    Colors.black.withOpacity(0.55),
+                                    Colors.black.withOpacity(0.32),
+                                  ],
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                          ),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(isTurn ? 0.8 : 0.35),
+                            width: 1.4,
+                          ),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          player.name.isNotEmpty
+                              ? player.name[0].toUpperCase()
+                              : '?',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 22,
+                            color: isTurn ? Colors.black87 : Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              isMe ? '${player.name} (You)' : player.name,
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: isTurn ? Colors.amberAccent : Colors.white,
-                fontWeight: isTurn ? FontWeight.bold : FontWeight.normal,
-                fontSize: 14,
+              const SizedBox(height: 10),
+              Text(
+                isMe ? '${player.name} · You' : player.name,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: isTurn ? Colors.black87 : Colors.white,
+                  fontWeight: isTurn ? FontWeight.w700 : FontWeight.w500,
+                  fontSize: 14,
+                ),
               ),
-            ),
-            Text(
-              '${player.hand.length} cards',
-              style: const TextStyle(color: Colors.white70, fontSize: 12),
-            ),
-          ],
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.style_outlined,
+                    size: 16,
+                    color: isTurn ? Colors.black54 : Colors.white70,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${player.hand.length} cards',
+                    style: TextStyle(
+                      color: isTurn ? Colors.black54 : Colors.white70,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+              if (isTurn)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      color: Colors.black.withOpacity(0.6),
+                    ),
+                    child: Text(
+                      isMe ? 'Your move' : 'Playing',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -642,6 +775,19 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           AnimatedSwitcher(
+            duration: const Duration(milliseconds: 250),
+            child: state.questionSuit != null
+                ? Padding(
+                    key: const ValueKey('question-banner'),
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: _buildAnswerPrompt(
+                      state.questionSuit!,
+                      isMyTurn,
+                    ),
+                  )
+                : const SizedBox.shrink(key: ValueKey('no-question-banner')),
+          ),
+          AnimatedSwitcher(
             duration: const Duration(milliseconds: 280),
             child: iAmComboOwner
                 ? Container(
@@ -784,25 +930,130 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
           const SizedBox(height: 18),
           SizedBox(
             height: 110,
-            child: ListView(
-              reverse: true,
-              padding: EdgeInsets.zero,
-              children: state.eventLog.reversed
-                  .map(
-                    (e) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 3),
-                      child: Text(
-                        e,
-                        style: const TextStyle(color: Colors.white60, fontSize: 12),
+            child: Scrollbar(
+              controller: _eventLogController,
+              thumbVisibility: true,
+              radius: const Radius.circular(12),
+              child: ListView(
+                controller: _eventLogController,
+                reverse: true,
+                padding: EdgeInsets.zero,
+                children: state.eventLog.reversed
+                    .map(
+                      (e) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        child: Text(
+                          e,
+                          style:
+                              const TextStyle(color: Colors.white60, fontSize: 12),
+                        ),
                       ),
-                    ),
-                  )
-                  .toList(),
+                    )
+                    .toList(),
+              ),
             ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildAnswerPrompt(Suit suit, bool isMyTurn) {
+    final accent = _suitAccentColor(suit);
+    final suitLabel = suit.label;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        gradient: LinearGradient(
+          colors: [
+            accent.withOpacity(0.85),
+            accent.withOpacity(0.55),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: accent.withOpacity(0.45),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
+        border: Border.all(color: Colors.white.withOpacity(0.6), width: 1.2),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white.withOpacity(0.92),
+            ),
+            child: Icon(
+              Icons.live_help,
+              color: accent.darken(),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Answer?',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  isMyTurn
+                      ? 'Play a $suitLabel number right now to stay safe.'
+                      : 'Waiting on a $suitLabel number response.',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              color: Colors.white.withOpacity(0.16),
+            ),
+            child: Text(
+              suitLabel,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _suitAccentColor(Suit suit) {
+    switch (suit) {
+      case Suit.clubs:
+        return const Color(0xFF66BB6A);
+      case Suit.diamonds:
+        return const Color(0xFFE57373);
+      case Suit.hearts:
+        return const Color(0xFFFF8A80);
+      case Suit.spades:
+        return const Color(0xFF90CAF9);
+      case Suit.joker:
+        return const Color(0xFFB39DDB);
+    }
   }
 
   Widget _buildCancelPopup() {
@@ -1204,6 +1455,48 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SeatCardShadow extends StatelessWidget {
+  final Color color;
+  final Color borderColor;
+
+  const _SeatCardShadow({
+    required this.color,
+    required this.borderColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 44,
+      height: 60,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        gradient: const LinearGradient(
+          colors: [Color(0x66FFFFFF), Color(0x18FFFFFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        border: Border.all(color: borderColor, width: 1.1),
+        boxShadow: [
+          BoxShadow(color: color, blurRadius: 16, offset: const Offset(0, 8)),
+        ],
+      ),
+    );
+  }
+}
+
+extension _ColorTones on Color {
+  Color darken([double amount = 0.18]) {
+    final factor = 1 - amount;
+    return Color.fromARGB(
+      alpha,
+      (red * factor).clamp(0, 255).toInt(),
+      (green * factor).clamp(0, 255).toInt(),
+      (blue * factor).clamp(0, 255).toInt(),
     );
   }
 }
