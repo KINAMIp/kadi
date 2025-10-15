@@ -27,8 +27,10 @@ class RuleState {
   final CardColor? requiredJokerColor;
   final DateTime? turnDeadline;
   final Map<String, int> idleStrikes;
+  final String? comboOwnerId;
+  final Rank? comboRank;
 
-   const RuleState({
+  const RuleState({
     this.forcedSuit,
     this.requestedRank,
     this.requestedCardSuit,
@@ -43,6 +45,8 @@ class RuleState {
     this.requiredJokerColor,
     this.turnDeadline,
     Map<String, int>? idleStrikes,
+    this.comboOwnerId,
+    this.comboRank,
   })  : nikoPending = nikoPending ?? const <String>{},
         nikoDeclared = nikoDeclared ?? const <String>{},
         idleStrikes = idleStrikes ?? const <String, int>{};
@@ -69,6 +73,10 @@ class RuleState {
     DateTime? turnDeadline,
     bool clearTurnDeadline = false,
     Map<String, int>? idleStrikes,
+    String? comboOwnerId,
+    bool clearComboOwner = false,
+    Rank? comboRank,
+    bool clearComboRank = false,
   }) {
     return RuleState(
       forcedSuit: clearForcedSuit
@@ -98,6 +106,9 @@ class RuleState {
       turnDeadline:
           clearTurnDeadline ? null : (turnDeadline ?? this.turnDeadline),
       idleStrikes: idleStrikes ?? this.idleStrikes,
+      comboOwnerId:
+          clearComboOwner ? null : (comboOwnerId ?? this.comboOwnerId),
+      comboRank: clearComboRank ? null : (comboRank ?? this.comboRank),
     );
   }
 
@@ -118,6 +129,8 @@ class RuleState {
         'requiredJokerColor': requiredJokerColor?.name,
         'turnDeadline': turnDeadline?.toIso8601String(),
         'idleStrikes': idleStrikes,
+        'comboOwnerId': comboOwnerId,
+        'comboRank': comboRank?.name,
       };
 }
 
@@ -364,9 +377,15 @@ class RuleState {
 
   static bool _isQuestionResponseForbidden(KadiCard card) {
     if (card.isJoker) return true;
-    if (card.rank == Rank.two || card.rank == Rank.three) return true;
-    if (card.rank == Rank.ace || card.rank == Rank.jack || card.rank == Rank.queen ||
-        card.rank == Rank.king) {
+    const allowedRanks = {
+      Rank.four,
+      Rank.five,
+      Rank.six,
+      Rank.seven,
+      Rank.nine,
+      Rank.ten,
+    };
+    if (!allowedRanks.contains(card.rank)) {
       return true;
     }
     return false;

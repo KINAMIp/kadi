@@ -13,6 +13,8 @@ class GameService {
   static final GameService _instance = GameService._();
   factory GameService() => _instance;
 
+  static const Duration _turnDuration = Duration(seconds: 30);
+
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final Map<String, Timer> _turnTimers = {};
   final Map<String, _TurnInfo> _turnInfos = {};
@@ -174,6 +176,17 @@ class GameService {
       final turnPlayer = players[state.turnIndex];
       if (turnPlayer.uid != playerId) return false;
 
+      final activeComboOwner = room.rules.comboOwnerId;
+      if (activeComboOwner != null && activeComboOwner != playerId) {
+        return false;
+      }
+      final activeComboRank = room.rules.comboRank;
+      if (activeComboOwner == playerId &&
+          activeComboRank != null &&
+          activeComboRank != card.rank) {
+        return false;
+      }
+
       final handIndex = turnPlayer.hand.indexWhere((c) => c.id == card.id);
       if (handIndex == -1) return false;
 
@@ -206,8 +219,8 @@ class GameService {
         }
       }
 
-      final discard = List<KadiCard>.from(state.discardPile)..add(card);
-      final drawPile = List<KadiCard>.from(state.drawPile);
+      var discard = List<KadiCard>.from(state.discardPile)..add(card);
+      var drawPile = List<KadiCard>.from(state.drawPile);
 
       final updatedHand = List<KadiCard>.from(turnPlayer.hand)..removeAt(handIndex);
       players[state.turnIndex] = turnPlayer.copyWith(hand: updatedHand);
@@ -244,8 +257,82 @@ class GameService {
         requestedCardSuit,
       );
 
+      if (updatedHand.isNotEmpty) {
+        final canChain =
+            !card.isAce && !card.isJoker && updatedHand.any((c) => c.rank == card.rank);
+        if (canChain) {
+          rules = rules.copyWith(
+            comboOwnerId: playerId,
+            comboRank: card.rank,
+            turnDeadline: DateTime.now().add(_turnDuration),
+          );
+          room.rules = rules;
+          room.state = state.copyWith(
+            players: players,
+            discardPile: discard,
+            drawPile: drawPile,
+            turnIndex: state.turnIndex,
+            eventLog: _appendLog(state.eventLog, logMessage),
+          );
+          room.turnChanged = true;
+          return true;
+        }
+      }
+
+      if (rules.comboOwnerId == playerId) {
+        rules = rules.copyWith(clearComboOwner: true, clearComboRank: true);
+      }
+
       if (updatedHand.isEmpty) {
         rules = RuleEngine.removeNikoFlags(rules, playerId);
+
+        final othersCardless = players
+            .where((p) => p.uid != playerId && p.hand.isEmpty)
+            .isNotEmpty;
+        if (othersCardless) {
+          final drawResult = _drawCards(drawPile, discard, 1);
+          final fallbackHand =
+              List<KadiCard>.from(updatedHand)..addAll(drawResult.drawn);
+          players[state.turnIndex] = turnPlayer.copyWith(hand: fallbackHand);
+          drawPile = drawResult.drawPile;
+          discard = drawResult.discardPile;
+
+          rules = RuleEngine.cancelRequestedRankIfImpossible(
+            state: rules,
+            playerHand: fallbackHand,
+          );
+
+          if (RuleEngine.needsNikoCall(fallbackHand)) {
+            rules = RuleEngine.markNikoPending(rules, playerId);
+          } else {
+            rules = RuleEngine.removeNikoFlags(rules, playerId);
+          }
+
+          final nextIndex = RuleEngine.nextPlayerIndex(
+            state: rules,
+            currentIndex: state.turnIndex,
+            playerCount: players.length,
+          );
+
+          final drawCount = drawResult.drawn.length;
+          final message = '$logMessage but another player had no cards, so '
+              '${turnPlayer.name} drew $drawCount card${drawCount == 1 ? '' : 's'}.';
+
+          room.rules = rules.copyWith(
+            turnDeadline: DateTime.now().add(_turnDuration),
+          );
+          room.state = state.copyWith(
+            players: players,
+            discardPile: discard,
+            drawPile: drawPile,
+            turnIndex: nextIndex,
+            winnerUid: null,
+            eventLog: _appendLog(state.eventLog, message),
+          );
+          room.turnChanged = true;
+          return true;
+        }
+
         room.rules = rules.copyWith(clearTurnDeadline: true);
         room.turnChanged = true;
 
@@ -281,7 +368,7 @@ class GameService {
             ),
           );
           room.rules = rules.copyWith(
-            turnDeadline: DateTime.now().add(const Duration(seconds: 10)),
+            turnDeadline: DateTime.now().add(_turnDuration),
           );
           room.state = updated;
           room.turnChanged = true;
@@ -302,7 +389,7 @@ class GameService {
       );
 
       room.rules = rules.copyWith(
-        turnDeadline: DateTime.now().add(const Duration(seconds: 10)),
+        turnDeadline: DateTime.now().add(_turnDuration),
       );
       room.state = state.copyWith(
         players: players,
@@ -328,6 +415,10 @@ class GameService {
 
       final turnPlayer = players[state.turnIndex];
       if (turnPlayer.uid != playerId) return false;
+
+      if (room.rules.comboOwnerId != null) {
+        return false;
+      }
 
       if (room.rules.skipCount > 0 && room.rules.skipCancelable) {
         return _pass(room, turnPlayer);
@@ -385,6 +476,62 @@ class GameService {
         _pass(room, players[state.turnIndex]);
       }
 
+      return true;
+    });
+  }
+
+  Future<void> finishCombo(String gameId, String playerId) async {
+    await _mutate(gameId, (room) {
+      if (room.state.gameStatus != 'playing') {
+        return false;
+      }
+      if (room.rules.comboOwnerId != playerId) {
+        return false;
+      }
+
+      final state = room.state;
+      final players = List<KadiPlayer>.from(state.players);
+      if (players.isEmpty) return false;
+
+      final turnPlayer = players[state.turnIndex];
+      if (turnPlayer.uid != playerId) return false;
+
+      final comboRank = room.rules.comboRank;
+      var rules = room.rules.copyWith(
+        clearComboOwner: true,
+        clearComboRank: true,
+      );
+
+      final updatedStrikes = Map<String, int>.from(rules.idleStrikes);
+      updatedStrikes.remove(playerId);
+      rules = rules.copyWith(idleStrikes: updatedStrikes);
+
+      if (RuleEngine.needsNikoCall(turnPlayer.hand)) {
+        rules = RuleEngine.markNikoPending(rules, playerId);
+      } else {
+        rules = RuleEngine.removeNikoFlags(rules, playerId);
+      }
+
+      final nextIndex = RuleEngine.nextPlayerIndex(
+        state: rules,
+        currentIndex: state.turnIndex,
+        playerCount: players.length,
+      );
+
+      final comboLabel =
+          comboRank != null ? '${comboRank.label}s' : 'their combo';
+
+      room.rules = rules.copyWith(
+        turnDeadline: DateTime.now().add(_turnDuration),
+      );
+      room.state = state.copyWith(
+        turnIndex: nextIndex,
+        eventLog: _appendLog(
+          state.eventLog,
+          '${turnPlayer.name} finished playing $comboLabel',
+        ),
+      );
+      room.turnChanged = true;
       return true;
     });
   }
@@ -518,6 +665,9 @@ class GameService {
 
   bool _pass(_Room room, KadiPlayer player, {String? logMessage}) {
     var rules = room.rules;
+    if (rules.comboOwnerId != null) {
+      rules = rules.copyWith(clearComboOwner: true, clearComboRank: true);
+    }
     if (rules.skipCount > 0) {
       rules = RuleEngine.clearAfterSkipResolution(rules);
     }
@@ -531,7 +681,7 @@ class GameService {
     final hasNextPlayer = room.state.players.length > 1;
     room.rules = rules.copyWith(
       turnDeadline: hasNextPlayer
-          ? DateTime.now().add(const Duration(seconds: 10))
+          ? DateTime.now().add(_turnDuration)
           : null,
     );
     room.state = room.state.copyWith(
@@ -577,7 +727,7 @@ class GameService {
     final turnIndex = rnd.nextInt(players.length);
 
     room.rules = const RuleState().copyWith(
-      turnDeadline: DateTime.now().add(const Duration(seconds: 10)),
+      turnDeadline: DateTime.now().add(_turnDuration),
       idleStrikes: const <String, int>{},
     );
 
@@ -794,7 +944,7 @@ class GameService {
           eventLog: updatedLog,
         );
         room.rules = rules.copyWith(
-          turnDeadline: DateTime.now().add(const Duration(seconds: 10)),
+          turnDeadline: DateTime.now().add(_turnDuration),
         );
         room.turnChanged = true;
         return true;
@@ -845,6 +995,8 @@ class GameService {
       idleStrikes: Map<String, int>.from(
         (rulesJson['idleStrikes'] as Map<String, dynamic>? ?? const {}),
       ),
+      comboOwnerId: rulesJson['comboOwnerId'] as String?,
+      comboRank: _parseRank(rulesJson['comboRank'] as String?),
     );
 
     return _Room(
@@ -873,6 +1025,8 @@ class GameService {
         'requiredJokerColor': room.rules.requiredJokerColor?.name,
         'turnDeadline': room.rules.turnDeadline?.toIso8601String(),
         'idleStrikes': room.rules.idleStrikes,
+        'comboOwnerId': room.rules.comboOwnerId,
+        'comboRank': room.rules.comboRank?.name,
       },
       'isPublic': room.isPublic,
       'updatedAt': FieldValue.serverTimestamp(),
@@ -891,6 +1045,8 @@ class GameService {
       nikoPending: room.rules.nikoPending.toList(),
       nikoDeclared: room.rules.nikoDeclared.toList(),
       requiredJokerColor: room.rules.requiredJokerColor,
+      comboOwnerId: room.rules.comboOwnerId,
+      comboRank: room.rules.comboRank,
     );
     room.state = synced;
     return synced;

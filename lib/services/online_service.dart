@@ -175,6 +175,10 @@ class OnlineService {
     _invokeGameAction(code, (gameId) => _game.drawCard(gameId, uid));
   }
 
+  void finishCombo(String code) {
+    _invokeGameAction(code, (gameId) => _game.finishCombo(gameId, uid));
+  }
+
   void passTurn(String code) {
     _invokeGameAction(code, (gameId) => _game.passTurn(gameId, uid));
   }

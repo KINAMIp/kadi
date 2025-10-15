@@ -26,6 +26,8 @@ class GameState {
   final List<String> nikoDeclared; // players that already called Niko Kadi
   final List<String> eventLog; // chronological description of actions
   final CardColor? requiredJokerColor; // forced joker color after cancel
+  final String? comboOwnerId; // player allowed to continue identical plays
+  final Rank? comboRank; // active identical rank being chained
 
   GameState({
     required this.id,
@@ -50,6 +52,8 @@ class GameState {
     List<String>? nikoDeclared,
     List<String>? eventLog,
     this.requiredJokerColor,
+    this.comboOwnerId,
+    this.comboRank,
   })  : nikoPending = nikoPending ?? const [],
         nikoDeclared = nikoDeclared ?? const [],
         eventLog = eventLog ?? const [];
@@ -79,6 +83,8 @@ class GameState {
     List<String>? nikoDeclared,
     List<String>? eventLog,
     Object? requiredJokerColor = _sentinel,
+    Object? comboOwnerId = _sentinel,
+    Object? comboRank = _sentinel,
   }) =>
       GameState(
         id: id ?? this.id,
@@ -115,6 +121,12 @@ class GameState {
         requiredJokerColor: identical(requiredJokerColor, _sentinel)
             ? this.requiredJokerColor
             : requiredJokerColor as CardColor?,
+        comboOwnerId: identical(comboOwnerId, _sentinel)
+            ? this.comboOwnerId
+            : comboOwnerId as String?,
+        comboRank: identical(comboRank, _sentinel)
+            ? this.comboRank
+            : comboRank as Rank?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -140,6 +152,8 @@ class GameState {
         'nikoDeclared': nikoDeclared,
         'eventLog': eventLog,
         'requiredJokerColor': requiredJokerColor?.name,
+        'comboOwnerId': comboOwnerId,
+        'comboRank': comboRank?.name,
       };
 
   factory GameState.fromJson(Map<String, dynamic> json) => GameState(
@@ -187,5 +201,9 @@ class GameState {
         requiredJokerColor: (json['requiredJokerColor'] as String?) == null
             ? null
             : CardColor.values.firstWhere((e) => e.name == json['requiredJokerColor']),
+        comboOwnerId: json['comboOwnerId'] as String?,
+        comboRank: (json['comboRank'] as String?) == null
+            ? null
+            : Rank.values.firstWhere((e) => e.name == json['comboRank']),
       );
 }
