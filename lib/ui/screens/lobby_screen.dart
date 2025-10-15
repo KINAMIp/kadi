@@ -140,28 +140,36 @@ class _LobbyScreenState extends State<LobbyScreen>
                                 blurRadius: 40,
                                 offset: const Offset(0, 24),
                               ),
-                            ],
-                          ),
-                          child: isWide
-                              ? Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Expanded(child: _buildLeftPromo()),
-                                    const SizedBox(width: 36),
-                                    Expanded(child: formContent),
-                                  ],
-                                )
-                              : Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    _buildLeftPromo(),
-                                    const SizedBox(height: 32),
-                                    formContent,
-                                  ],
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black
+                                      .withOpacity(0.38 + 0.1 * _glowAnimation.value),
+                                  blurRadius: 40,
+                                  offset: const Offset(0, 24),
                                 ),
-                        );
-                      },
+                              ],
+                            ),
+                            child: isWide
+                                ? Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(child: _buildLeftPromo()),
+                                      const SizedBox(width: 36),
+                                      Expanded(child: formContent),
+                                    ],
+                                  )
+                                : Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      _buildLeftPromo(),
+                                      const SizedBox(height: 32),
+                                      formContent,
+                                    ],
+                                  ),
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
