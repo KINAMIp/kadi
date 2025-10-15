@@ -157,6 +157,7 @@ class OnlineService {
     required KadiCard card,
     Suit? chosenSuit,
     Rank? requestedRank,
+    Suit? requestedCardSuit,
   }) {
     _invokeGameAction(code, (gameId) {
       return _game.playCard(
@@ -165,6 +166,7 @@ class OnlineService {
         card,
         chosenSuit: chosenSuit,
         requestedRank: requestedRank,
+        requestedCardSuit: requestedCardSuit,
       );
     });
   }

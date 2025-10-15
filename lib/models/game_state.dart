@@ -13,6 +13,7 @@ class GameState {
   final DateTime createdAt;
   final Suit? requiredSuit; // suit requested by Ace change
   final Rank? requestedRank; // Ace of spades request
+  final Suit? requestedCardSuit; // suit requested alongside rank
   final Suit? questionSuit; // pending 8/Q follow-up suit
   final int pendingDraw; // accumulated penalty cards to draw
   final bool clockwise; // true => clockwise, false => counter
@@ -22,6 +23,7 @@ class GameState {
   final List<String> nikoPending; // players who must announce
   final List<String> nikoDeclared; // players that already called Niko Kadi
   final List<String> eventLog; // chronological description of actions
+  final CardColor? requiredJokerColor; // forced joker color after cancel
 
   GameState({
     required this.id,
@@ -33,6 +35,7 @@ class GameState {
     required this.createdAt,
     this.requiredSuit,
     this.requestedRank,
+    this.requestedCardSuit,
     this.questionSuit,
     this.pendingDraw = 0,
     this.clockwise = true,
@@ -42,6 +45,7 @@ class GameState {
     List<String>? nikoPending,
     List<String>? nikoDeclared,
     List<String>? eventLog,
+    this.requiredJokerColor,
   })  : nikoPending = nikoPending ?? const [],
         nikoDeclared = nikoDeclared ?? const [],
         eventLog = eventLog ?? const [];
@@ -58,6 +62,7 @@ class GameState {
     DateTime? createdAt,
     Object? requiredSuit = _sentinel,
     Object? requestedRank = _sentinel,
+    Object? requestedCardSuit = _sentinel,
     Object? questionSuit = _sentinel,
     int? pendingDraw,
     bool? clockwise,
@@ -67,6 +72,7 @@ class GameState {
     List<String>? nikoPending,
     List<String>? nikoDeclared,
     List<String>? eventLog,
+    Object? requiredJokerColor = _sentinel,
   }) =>
       GameState(
         id: id ?? this.id,
@@ -82,6 +88,9 @@ class GameState {
         requestedRank: identical(requestedRank, _sentinel)
             ? this.requestedRank
             : requestedRank as Rank?,
+        requestedCardSuit: identical(requestedCardSuit, _sentinel)
+            ? this.requestedCardSuit
+            : requestedCardSuit as Suit?,
         questionSuit: identical(questionSuit, _sentinel)
             ? this.questionSuit
             : questionSuit as Suit?,
@@ -95,6 +104,9 @@ class GameState {
         nikoPending: nikoPending ?? List<String>.from(this.nikoPending),
         nikoDeclared: nikoDeclared ?? List<String>.from(this.nikoDeclared),
         eventLog: eventLog ?? List<String>.from(this.eventLog),
+        requiredJokerColor: identical(requiredJokerColor, _sentinel)
+            ? this.requiredJokerColor
+            : requiredJokerColor as CardColor?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -107,6 +119,7 @@ class GameState {
         'createdAt': createdAt.toIso8601String(),
         'requiredSuit': requiredSuit?.name,
         'requestedRank': requestedRank?.name,
+        'requestedCardSuit': requestedCardSuit?.name,
         'questionSuit': questionSuit?.name,
         'pendingDraw': pendingDraw,
         'clockwise': clockwise,
@@ -116,6 +129,7 @@ class GameState {
         'nikoPending': nikoPending,
         'nikoDeclared': nikoDeclared,
         'eventLog': eventLog,
+        'requiredJokerColor': requiredJokerColor?.name,
       };
 
   factory GameState.fromJson(Map<String, dynamic> json) => GameState(
@@ -138,6 +152,9 @@ class GameState {
         requestedRank: (json['requestedRank'] as String?) == null
             ? null
             : Rank.values.firstWhere((e) => e.name == json['requestedRank']),
+        requestedCardSuit: (json['requestedCardSuit'] as String?) == null
+            ? null
+            : Suit.values.firstWhere((e) => e.name == json['requestedCardSuit']),
         questionSuit: (json['questionSuit'] as String?) == null
             ? null
             : Suit.values.firstWhere((e) => e.name == json['questionSuit']),
@@ -155,5 +172,8 @@ class GameState {
         eventLog: (json['eventLog'] as List<dynamic>? ?? [])
             .map((e) => e.toString())
             .toList(),
+        requiredJokerColor: (json['requiredJokerColor'] as String?) == null
+            ? null
+            : CardColor.values.firstWhere((e) => e.name == json['requiredJokerColor']),
       );
 }
