@@ -134,8 +134,8 @@ class RuleState {
       };
 }
 
-      class RuleEngine {
-      /// Validates whether [card] may be played given [state] and current [topCard].
+class RuleEngine {
+  /// Validates whether [card] may be played given [state] and current [topCard].
   static RuleValidationResult canPlay({
     required RuleState state,
     required KadiCard card,
