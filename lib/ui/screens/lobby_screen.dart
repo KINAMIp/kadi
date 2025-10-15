@@ -329,6 +329,47 @@ class _LobbyScreenState extends State<LobbyScreen>
     );
   }
 
+  Widget _buildLobbySurface({required bool isWide, required Widget formContent}) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 500),
+      curve: Curves.easeOutCubic,
+      padding: const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(32),
+        border: Border.all(
+          color: Colors.white.withOpacity(0.12),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color:
+                Colors.black.withOpacity(0.38 + 0.1 * _glowAnimation.value),
+            blurRadius: 40,
+            offset: const Offset(0, 24),
+          ),
+        ],
+      ),
+      child: isWide
+          ? Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: _buildLeftPromo()),
+                const SizedBox(width: 36),
+                Expanded(child: formContent),
+              ],
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildLeftPromo(),
+                const SizedBox(height: 32),
+                formContent,
+              ],
+            ),
+    );
+  }
+
   Widget _buildCreateCard() {
     return Container(
       padding: const EdgeInsets.all(22),
