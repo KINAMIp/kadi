@@ -115,25 +115,30 @@ class _LobbyScreenState extends State<LobbyScreen>
                   child: SingleChildScrollView(
                     controller: _pageScrollController,
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 16,
-                    ),
+                        horizontal: 24, vertical: 16),
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 980),
                       child: LayoutBuilder(
                         builder: (context, constraints) {
-                          final isWide = constraints.maxWidth > 780;
-                          final formContent = _buildFormContent(isWide);
-                          return AnimatedContainer(
-                            duration: const Duration(milliseconds: 500),
-                            curve: Curves.easeOutCubic,
-                            padding: const EdgeInsets.all(28),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.06),
-                              borderRadius: BorderRadius.circular(32),
-                              border: Border.all(
-                                color: Colors.white.withOpacity(0.12),
-                                width: 1.2,
+                        final isWide = constraints.maxWidth > 780;
+                        final formContent = _buildFormContent(isWide);
+                        return AnimatedContainer(
+                          duration: const Duration(milliseconds: 500),
+                          curve: Curves.easeOutCubic,
+                          padding: const EdgeInsets.all(28),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(32),
+                            border: Border.all(
+                              color: Colors.white.withOpacity(0.12),
+                              width: 1.2,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black
+                                    .withOpacity(0.38 + 0.1 * _glowAnimation.value),
+                                blurRadius: 40,
+                                offset: const Offset(0, 24),
                               ),
                               boxShadow: [
                                 BoxShadow(
