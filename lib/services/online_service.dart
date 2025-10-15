@@ -179,6 +179,10 @@ class OnlineService {
     _invokeGameAction(code, (gameId) => _game.passTurn(gameId, uid));
   }
 
+  void startGame(String code) {
+    _invokeGameAction(code, (gameId) => _game.startGame(gameId, uid));
+  }
+
   void declareNikoKadi(String code) {
     _invokeGameAction(code, (gameId) => _game.declareNikoKadi(gameId, uid));
   }
