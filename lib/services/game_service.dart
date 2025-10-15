@@ -204,20 +204,34 @@ class GameService {
 
       if (card.isAce && room.rules.pendingDraw == 0) {
         if (card.isAceOfSpades) {
-          final requestingCard = requestedRank != null;
-          final changingSuit = chosenSuit != null;
-          if (!requestingCard && !changingSuit) {
-            return false;
-          }
-          if (requestedCardSuit != null && requestedRank == null) {
+          final hasRequest = requestedRank != null && requestedCardSuit != null;
+          if (!hasRequest) {
             return false;
           }
         } else {
-          if (chosenSuit == null) {
+          if (requestedRank != null || requestedCardSuit != null) {
             return false;
           }
         }
       }
+
+      if (card.isAceOfSpades && room.rules.pendingDraw > 0) {
+        if (requestedRank != null || requestedCardSuit != null) {
+          return false;
+        }
+      }
+
+      if (card.isAceOfSpades) {
+        final hasRank = requestedRank != null;
+        final hasSuit = requestedCardSuit != null;
+        if (hasRank != hasSuit) {
+          return false;
+        }
+      }
+
+      final bool willForceSuit =
+          card.isAce && !card.isAceOfSpades && room.rules.pendingDraw == 0;
+      final Suit? resolvedChosenSuit = willForceSuit ? card.suit : chosenSuit;
 
       var discard = List<KadiCard>.from(state.discardPile)..add(card);
       var drawPile = List<KadiCard>.from(state.drawPile);
@@ -240,7 +254,7 @@ class GameService {
       rules = RuleEngine.applyCardEffect(
         state: rules,
         card: card,
-        chosenSuit: chosenSuit,
+        chosenSuit: resolvedChosenSuit,
         requestedRank: requestedRank,
         requestedCardSuit: requestedCardSuit,
       );
@@ -252,7 +266,7 @@ class GameService {
       final logMessage = _describePlay(
         turnPlayer.name,
         card,
-        chosenSuit,
+        resolvedChosenSuit,
         requestedRank,
         requestedCardSuit,
       );
@@ -418,6 +432,18 @@ class GameService {
 
       if (room.rules.comboOwnerId != null) {
         return false;
+      }
+
+      if (room.rules.requestedRank != null) {
+        final requiredSuit = room.rules.requestedCardSuit;
+        final hasRequested = turnPlayer.hand.any((c) {
+          if (c.rank != room.rules.requestedRank) return false;
+          if (requiredSuit != null && c.suit != requiredSuit) return false;
+          return true;
+        });
+        if (hasRequested) {
+          return false;
+        }
       }
 
       if (room.rules.skipCount > 0 && room.rules.skipCancelable) {
