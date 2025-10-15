@@ -21,7 +21,9 @@ class GameBoardScreen extends StatefulWidget {
 
 class _GameBoardScreenState extends State<GameBoardScreen> {
   final OnlineService _svc = OnlineService();
-  static const int _turnDurationSeconds = 30;
+  static const int _turnDurationSeconds = 20;
+
+  late final Stream<GameState> _roomStream;
 
   Timer? _turnTimer;
   int _turnSecondsLeft = 0;
@@ -32,6 +34,12 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
   int _cancelSecondsLeft = 0;
 
   bool _showNikoPrompt = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _roomStream = _svc.watchRoom(widget.roomCode);
+  }
 
   @override
   void dispose() {
@@ -59,7 +67,7 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
         ],
       ),
       body: StreamBuilder<GameState>(
-        stream: _svc.watchRoom(widget.roomCode),
+        stream: _roomStream,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(
