@@ -2,6 +2,8 @@ import 'dart:math';
 
 enum Suit { clubs, diamonds, hearts, spades, joker }
 
+enum CardColor { red, black }
+
 enum Rank {
   ace,
   two,
@@ -58,10 +60,13 @@ class KadiCard {
   final Suit suit;
   final Rank rank;
 
+  final CardColor? jokerColor;
+
   KadiCard({
     required this.id,
     required this.suit,
     required this.rank,
+    this.jokerColor,
   });
 
   /// Simple helper used by UI
@@ -69,6 +74,22 @@ class KadiCard {
       isJoker || rank == Rank.two || rank == Rank.three || rank == Rank.ace || rank == Rank.jack;
 
   bool get isJoker => suit == Suit.joker || rank == Rank.joker;
+
+  CardColor get color {
+    if (isJoker) {
+      return jokerColor ?? CardColor.values[id.hashCode & 1];
+    }
+    switch (suit) {
+      case Suit.hearts:
+      case Suit.diamonds:
+        return CardColor.red;
+      case Suit.spades:
+      case Suit.clubs:
+        return CardColor.black;
+      case Suit.joker:
+        return jokerColor ?? CardColor.red;
+    }
+  }
 
   bool get isAce => rank == Rank.ace;
 
@@ -109,12 +130,16 @@ class KadiCard {
         'id': id,
         'suit': suit.name,
         'rank': rank.name,
+        'jokerColor': jokerColor?.name,
       };
 
   factory KadiCard.fromJson(Map<String, dynamic> json) => KadiCard(
         id: json['id'] as String,
         suit: Suit.values.firstWhere((e) => e.name == json['suit']),
         rank: Rank.values.firstWhere((e) => e.name == json['rank']),
+        jokerColor: json['jokerColor'] == null
+            ? null
+            : CardColor.values.firstWhere((e) => e.name == json['jokerColor']),
       );
 
   static List<KadiCard> fullDeck({bool includeJokers = true}) {
@@ -133,8 +158,22 @@ class KadiCard {
       }
     }
     if (includeJokers) {
-      list.add(KadiCard(id: 'j1_${rnd.nextInt(1 << 32)}', suit: Suit.joker, rank: Rank.joker));
-      list.add(KadiCard(id: 'j2_${rnd.nextInt(1 << 32)}', suit: Suit.joker, rank: Rank.joker));
+      list.add(
+        KadiCard(
+          id: 'j1_${rnd.nextInt(1 << 32)}',
+          suit: Suit.joker,
+          rank: Rank.joker,
+          jokerColor: CardColor.red,
+        ),
+      );
+      list.add(
+        KadiCard(
+          id: 'j2_${rnd.nextInt(1 << 32)}',
+          suit: Suit.joker,
+          rank: Rank.joker,
+          jokerColor: CardColor.black,
+        ),
+      );
     }
     list.shuffle();
     return list;
@@ -178,7 +217,12 @@ class CardAssets {
   }
 
   static String _jokerAssetFor(KadiCard card) {
-    final index = card.id.hashCode & 1;
-    return _jokerVariants[index % _jokerVariants.length];
+    if (card.jokerColor == CardColor.black) {
+      return _jokerVariants[1];
+    }
+    return _jokerVariants[0];
   }
+}
+extension CardColorLabel on CardColor {
+  String get label => this == CardColor.red ? 'Red' : 'Black';
 }

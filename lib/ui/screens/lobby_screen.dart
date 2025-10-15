@@ -156,6 +156,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
                               borderSide: BorderSide.none,
                             ),
                           ),
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.w600,
+                          ),
                           items: List.generate(
                             6,
                             (index) {

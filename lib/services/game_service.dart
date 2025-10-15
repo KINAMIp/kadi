@@ -14,6 +14,8 @@ class GameService {
   factory GameService() => _instance;
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final Map<String, Timer> _turnTimers = {};
+  final Map<String, _TurnInfo> _turnInfos = {};
 
   CollectionReference<Map<String, dynamic>> get _games =>
       _firestore.collection('games');
@@ -135,6 +137,7 @@ class GameService {
     KadiCard card, {
     Suit? chosenSuit,
     Rank? requestedRank,
+    Suit? requestedCardSuit,
   }) async {
     await _mutate(gameId, (room) {
       if (room.state.gameStatus != 'playing') {
@@ -165,7 +168,12 @@ class GameService {
 
       if (card.isAce && room.rules.pendingDraw == 0) {
         if (card.isAceOfSpades) {
-          if (requestedRank == null && chosenSuit == null) {
+          final requestingCard = requestedRank != null;
+          final changingSuit = chosenSuit != null;
+          if (!requestingCard && !changingSuit) {
+            return false;
+          }
+          if (requestedCardSuit != null && requestedRank == null) {
             return false;
           }
         } else {
@@ -198,13 +206,25 @@ class GameService {
         card: card,
         chosenSuit: chosenSuit,
         requestedRank: requestedRank,
+        requestedCardSuit: requestedCardSuit,
       );
 
-      final logMessage = _describePlay(turnPlayer.name, card, chosenSuit, requestedRank);
+      final updatedStrikes = Map<String, int>.from(rules.idleStrikes);
+      updatedStrikes.remove(playerId);
+      rules = rules.copyWith(idleStrikes: updatedStrikes);
+
+      final logMessage = _describePlay(
+        turnPlayer.name,
+        card,
+        chosenSuit,
+        requestedRank,
+        requestedCardSuit,
+      );
 
       if (updatedHand.isEmpty) {
         rules = RuleEngine.removeNikoFlags(rules, playerId);
-        room.rules = rules;
+        room.rules = rules.copyWith(clearTurnDeadline: true);
+        room.turnChanged = true;
 
         final canWin = !nikoRequired || nikoDeclared;
         if (canWin) {
@@ -237,8 +257,11 @@ class GameService {
               '$logMessage (no Niko Kadi call)',
             ),
           );
-          room.rules = rules;
+          room.rules = rules.copyWith(
+            turnDeadline: DateTime.now().add(const Duration(seconds: 10)),
+          );
           room.state = updated;
+          room.turnChanged = true;
           return true;
         }
       }
@@ -255,7 +278,9 @@ class GameService {
         playerCount: players.length,
       );
 
-      room.rules = rules;
+      room.rules = rules.copyWith(
+        turnDeadline: DateTime.now().add(const Duration(seconds: 10)),
+      );
       room.state = state.copyWith(
         players: players,
         discardPile: discard,
@@ -263,6 +288,7 @@ class GameService {
         turnIndex: nextIndex,
         eventLog: _appendLog(state.eventLog, logMessage),
       );
+      room.turnChanged = true;
       return true;
     });
   }
@@ -298,6 +324,9 @@ class GameService {
           skipCancelable: false,
           clearForcedSuit: true,
           clearRequestedRank: true,
+          clearRequestedCardSuit: true,
+          clearRequiredJokerColor: true,
+          clearActiveJokerColor: true,
         );
       } else if (room.rules.questionSuit != null) {
         message = '${turnPlayer.name} failed the question and drew a card';
@@ -310,6 +339,10 @@ class GameService {
         state: rules,
         playerHand: newHand,
       );
+
+      final updatedStrikes = Map<String, int>.from(rules.idleStrikes);
+      updatedStrikes.remove(playerId);
+      rules = rules.copyWith(idleStrikes: updatedStrikes);
 
       if (RuleEngine.needsNikoCall(newHand)) {
         rules = RuleEngine.markNikoPending(rules, playerId);
@@ -345,6 +378,10 @@ class GameService {
 
       final turnPlayer = players[state.turnIndex];
       if (turnPlayer.uid != playerId) return false;
+
+      final updatedStrikes = Map<String, int>.from(room.rules.idleStrikes);
+      updatedStrikes.remove(playerId);
+      room.rules = room.rules.copyWith(idleStrikes: updatedStrikes);
 
       return _pass(room, turnPlayer);
     });
@@ -383,6 +420,9 @@ class GameService {
   ) async {
     final ref = _games.doc(gameId);
     var shouldRestart = false;
+    var shouldRescheduleTurn = false;
+    DateTime? deadline;
+    String? turnPlayerId;
     await _firestore.runTransaction((txn) async {
       final snapshot = await txn.get(ref);
       if (!snapshot.exists) {
@@ -395,15 +435,29 @@ class GameService {
       }
       shouldRestart = room.scheduleRestart;
       room.scheduleRestart = false;
+      shouldRescheduleTurn = room.turnChanged;
+      if (room.turnChanged) {
+        deadline = room.rules.turnDeadline;
+        if (room.state.gameStatus == 'playing' && room.state.players.isNotEmpty) {
+          final currentIndex = room.state.turnIndex % room.state.players.length;
+          turnPlayerId = room.state.players[currentIndex].uid;
+        } else {
+          turnPlayerId = null;
+        }
+        room.turnChanged = false;
+      }
       final data = _serializeRoom(room);
       txn.set(ref, data);
     });
     if (shouldRestart) {
       _scheduleRestart(gameId);
     }
+    if (shouldRescheduleTurn) {
+      _scheduleTurnTimer(gameId, deadline, turnPlayerId);
+    }
   }
 
-  bool _pass(_Room room, KadiPlayer player) {
+  bool _pass(_Room room, KadiPlayer player, {String? logMessage}) {
     var rules = room.rules;
     if (rules.skipCount > 0) {
       rules = RuleEngine.clearAfterSkipResolution(rules);
@@ -415,11 +469,20 @@ class GameService {
       playerCount: room.state.players.length,
     );
 
-    room.rules = rules;
+    final hasNextPlayer = room.state.players.length > 1;
+    room.rules = rules.copyWith(
+      turnDeadline: hasNextPlayer
+          ? DateTime.now().add(const Duration(seconds: 10))
+          : null,
+    );
     room.state = room.state.copyWith(
       turnIndex: nextIndex,
-      eventLog: _appendLog(room.state.eventLog, '${player.name} passed'),
+      eventLog: _appendLog(
+        room.state.eventLog,
+        logMessage ?? '${player.name} passed',
+      ),
     );
+    room.turnChanged = true;
     return true;
   }
 
@@ -442,16 +505,22 @@ class GameService {
       players[i] = players[i].copyWith(hand: hand);
     }
 
-    var starterIndex = deck.lastIndexWhere((c) => c.isOrdinary);
-    if (starterIndex < 0) {
-      starterIndex = deck.length - 1;
+    final ordinaryStarters = deck.where((c) => c.isOrdinary).toList();
+    KadiCard starter;
+    if (ordinaryStarters.isEmpty) {
+      starter = deck.removeLast();
+    } else {
+      starter = ordinaryStarters[rnd.nextInt(ordinaryStarters.length)];
+      deck.removeWhere((c) => c.id == starter.id);
     }
-    final starter = deck.removeAt(starterIndex);
     final discard = <KadiCard>[starter];
 
     final turnIndex = rnd.nextInt(players.length);
 
-    room.rules = const RuleState();
+    room.rules = const RuleState().copyWith(
+      turnDeadline: DateTime.now().add(const Duration(seconds: 10)),
+      idleStrikes: const <String, int>{},
+    );
 
     room.state = room.state.copyWith(
       players: players,
@@ -465,6 +534,7 @@ class GameService {
         'Round started. ${players[turnIndex].name} begins with ${starter.rank.label} of ${starter.suit.label}.',
       ),
     );
+    room.turnChanged = true;
   }
 
   void _scheduleRestart(String gameId) {
@@ -501,6 +571,172 @@ class GameService {
     });
   }
 
+  void _scheduleTurnTimer(String gameId, DateTime? deadline, String? playerId) {
+    _turnTimers[gameId]?.cancel();
+    if (deadline == null || playerId == null) {
+      _turnInfos.remove(gameId);
+      _turnTimers.remove(gameId);
+      return;
+    }
+
+    final now = DateTime.now();
+    final delay = deadline.difference(now);
+    _turnInfos[gameId] = _TurnInfo(playerId: playerId, deadline: deadline);
+
+    if (delay.isNegative) {
+      Future.microtask(() => _handleTurnTimeout(gameId));
+      return;
+    }
+
+    _turnTimers[gameId] = Timer(delay, () => _handleTurnTimeout(gameId));
+  }
+
+  Future<void> _handleTurnTimeout(String gameId) async {
+    final info = _turnInfos[gameId];
+    await _mutate(gameId, (room) {
+      if (room.state.gameStatus != 'playing') {
+        return false;
+      }
+      if (room.state.players.isEmpty) {
+        return false;
+      }
+
+      final deadline = room.rules.turnDeadline;
+      final now = DateTime.now();
+      if (deadline == null || now.isBefore(deadline)) {
+        return false;
+      }
+
+      final players = List<KadiPlayer>.from(room.state.players);
+      final currentIndex = room.state.turnIndex % players.length;
+      final currentPlayer = players[currentIndex];
+
+      if (info != null && info.playerId != null && info.playerId != currentPlayer.uid) {
+        return false;
+      }
+
+      final drawCount = room.rules.pendingDraw > 0 ? room.rules.pendingDraw : 1;
+      final drawResult = _drawCards(room.state.drawPile, room.state.discardPile, drawCount);
+      final newHand = List<KadiCard>.from(currentPlayer.hand)..addAll(drawResult.drawn);
+      players[currentIndex] = currentPlayer.copyWith(hand: newHand);
+
+      var rules = room.rules;
+      String message;
+      if (room.rules.pendingDraw > 0) {
+        message =
+            '${currentPlayer.name} timed out and drew ${drawResult.drawn.length} penalty cards';
+        rules = rules.copyWith(
+          pendingDraw: 0,
+          skipCancelable: false,
+          clearForcedSuit: true,
+          clearRequestedRank: true,
+          clearRequestedCardSuit: true,
+          clearRequiredJokerColor: true,
+          clearActiveJokerColor: true,
+        );
+      } else if (room.rules.questionSuit != null) {
+        message = '${currentPlayer.name} timed out on a question and drew a card';
+        rules = rules.copyWith(clearQuestionSuit: true, skipCancelable: false);
+      } else {
+        message = '${currentPlayer.name} timed out and drew a card';
+      }
+
+      rules = RuleEngine.cancelRequestedRankIfImpossible(
+        state: rules,
+        playerHand: newHand,
+      );
+
+      if (RuleEngine.needsNikoCall(newHand)) {
+        rules = RuleEngine.markNikoPending(rules, currentPlayer.uid);
+      } else {
+        rules = RuleEngine.removeNikoFlags(rules, currentPlayer.uid);
+      }
+
+      final strikes = Map<String, int>.from(rules.idleStrikes);
+      final strikeCount = (strikes[currentPlayer.uid] ?? 0) + 1;
+      strikes[currentPlayer.uid] = strikeCount;
+
+      if (strikeCount >= 3) {
+        final removalMessage = '$message. ${currentPlayer.name} was removed after 3 timeouts.';
+        final recycled = List<KadiCard>.from(newHand);
+        final remainingPlayers = List<KadiPlayer>.from(players)..removeAt(currentIndex);
+        var drawPile = List<KadiCard>.from(drawResult.drawPile)..addAll(recycled);
+        drawPile.shuffle();
+        final discardPile = List<KadiCard>.from(drawResult.discardPile);
+
+        rules = rules.copyWith(
+          idleStrikes: Map<String, int>.from(strikes)..remove(currentPlayer.uid),
+          clearRequestedRank: true,
+          clearRequestedCardSuit: true,
+          clearForcedSuit: true,
+          skipCancelable: false,
+          clearRequiredJokerColor: true,
+          clearActiveJokerColor: true,
+        );
+        rules = RuleEngine.removeNikoFlags(rules, currentPlayer.uid);
+
+        if (remainingPlayers.isEmpty) {
+          room.rules = const RuleState();
+          room.state = room.state.copyWith(
+            players: const [],
+            drawPile: const <KadiCard>[],
+            discardPile: const <KadiCard>[],
+            gameStatus: 'waiting',
+            winnerUid: null,
+            turnIndex: 0,
+            eventLog: _appendLog(room.state.eventLog, removalMessage),
+          );
+          room.turnChanged = true;
+          return true;
+        }
+
+        final updatedLog = _appendLog(room.state.eventLog, removalMessage);
+        if (remainingPlayers.length == 1) {
+          final winner = remainingPlayers.first;
+          room.state = room.state.copyWith(
+            players: remainingPlayers,
+            drawPile: drawPile,
+            discardPile: discardPile,
+            turnIndex: 0,
+            gameStatus: 'finished',
+            winnerUid: winner.uid,
+            eventLog: updatedLog,
+          );
+          room.rules = rules.copyWith(clearTurnDeadline: true);
+          room.turnChanged = true;
+          room.scheduleRestart = true;
+          return true;
+        }
+
+        final nextIndex = currentIndex % remainingPlayers.length;
+        room.state = room.state.copyWith(
+          players: remainingPlayers,
+          drawPile: drawPile,
+          discardPile: discardPile,
+          turnIndex: nextIndex,
+          eventLog: updatedLog,
+        );
+        room.rules = rules.copyWith(
+          turnDeadline: DateTime.now().add(const Duration(seconds: 10)),
+        );
+        room.turnChanged = true;
+        return true;
+      }
+
+      rules = rules.copyWith(idleStrikes: strikes);
+
+      room.rules = rules;
+      room.state = room.state.copyWith(
+        players: players,
+        drawPile: drawResult.drawPile,
+        discardPile: drawResult.discardPile,
+      );
+
+      _pass(room, players[currentIndex], logMessage: message);
+      return true;
+    });
+  }
+
   _Room _roomFromData(Map<String, dynamic> data) {
     final stateJson = Map<String, dynamic>.from(
       (data['state'] as Map<String, dynamic>?) ?? const {},
@@ -514,6 +750,7 @@ class GameService {
     final rules = RuleState(
       forcedSuit: _parseSuit(rulesJson['forcedSuit'] as String?),
       requestedRank: _parseRank(rulesJson['requestedRank'] as String?),
+      requestedCardSuit: _parseSuit(rulesJson['requestedCardSuit'] as String?),
       questionSuit: _parseSuit(rulesJson['questionSuit'] as String?),
       pendingDraw: (rulesJson['pendingDraw'] ?? 0) as int,
       clockwise: (rulesJson['clockwise'] ?? true) as bool,
@@ -525,6 +762,12 @@ class GameService {
       nikoDeclared: ((rulesJson['nikoDeclared'] as List<dynamic>? ?? const [])
           .map((e) => e.toString())
           .toSet()),
+      activeJokerColor: _parseCardColor(rulesJson['activeJokerColor'] as String?),
+      requiredJokerColor: _parseCardColor(rulesJson['requiredJokerColor'] as String?),
+      turnDeadline: _parseDateTime(rulesJson['turnDeadline'] as String?),
+      idleStrikes: Map<String, int>.from(
+        (rulesJson['idleStrikes'] as Map<String, dynamic>? ?? const {}),
+      ),
     );
 
     return _Room(
@@ -541,6 +784,7 @@ class GameService {
       'rules': {
         'forcedSuit': room.rules.forcedSuit?.name,
         'requestedRank': room.rules.requestedRank?.name,
+        'requestedCardSuit': room.rules.requestedCardSuit?.name,
         'questionSuit': room.rules.questionSuit?.name,
         'pendingDraw': room.rules.pendingDraw,
         'clockwise': room.rules.clockwise,
@@ -548,6 +792,10 @@ class GameService {
         'skipCancelable': room.rules.skipCancelable,
         'nikoPending': room.rules.nikoPending.toList(),
         'nikoDeclared': room.rules.nikoDeclared.toList(),
+        'activeJokerColor': room.rules.activeJokerColor?.name,
+        'requiredJokerColor': room.rules.requiredJokerColor?.name,
+        'turnDeadline': room.rules.turnDeadline?.toIso8601String(),
+        'idleStrikes': room.rules.idleStrikes,
       },
       'isPublic': room.isPublic,
       'updatedAt': FieldValue.serverTimestamp(),
@@ -558,12 +806,14 @@ class GameService {
     final synced = room.state.copyWith(
       requiredSuit: room.rules.forcedSuit,
       requestedRank: room.rules.requestedRank,
+      requestedCardSuit: room.rules.requestedCardSuit,
       questionSuit: room.rules.questionSuit,
       pendingDraw: room.rules.pendingDraw,
       clockwise: room.rules.clockwise,
       skipCount: room.rules.skipCount,
       nikoPending: room.rules.nikoPending.toList(),
       nikoDeclared: room.rules.nikoDeclared.toList(),
+      requiredJokerColor: room.rules.requiredJokerColor,
     );
     room.state = synced;
     return synced;
@@ -587,6 +837,21 @@ class GameService {
       }
     }
     return null;
+  }
+
+  CardColor? _parseCardColor(String? value) {
+    if (value == null || value.isEmpty) return null;
+    for (final color in CardColor.values) {
+      if (color.name == value) {
+        return color;
+      }
+    }
+    return null;
+  }
+
+  DateTime? _parseDateTime(String? value) {
+    if (value == null || value.isEmpty) return null;
+    return DateTime.tryParse(value);
   }
 
   _DrawResult _drawCards(
@@ -629,6 +894,7 @@ class GameService {
     KadiCard card,
     Suit? chosenSuit,
     Rank? requestedRank,
+    Suit? requestedCardSuit,
   ) {
     final buffer = StringBuffer(
         '$playerName played ${card.rank.label} of ${card.suit.label}');
@@ -636,7 +902,12 @@ class GameService {
       buffer.write(' choosing ${chosenSuit.label}');
     }
     if (card.isAceOfSpades && requestedRank != null) {
-      buffer.write(' requesting ${requestedRank.label}');
+      if (requestedCardSuit != null) {
+        buffer.write(
+            ' requesting ${requestedRank.label} of ${requestedCardSuit.label}');
+      } else {
+        buffer.write(' requesting ${requestedRank.label}');
+      }
     }
     if (card.isPenaltyCard) {
       buffer.write(' (penalty +${card.penaltyValue})');
@@ -666,6 +937,13 @@ class _DrawResult {
   });
 }
 
+class _TurnInfo {
+  final String? playerId;
+  final DateTime? deadline;
+
+  const _TurnInfo({required this.playerId, required this.deadline});
+}
+
 class _Room {
   _Room({
     required this.state,
@@ -677,4 +955,5 @@ class _Room {
   RuleState rules;
   final bool isPublic;
   bool scheduleRestart = false;
+  bool turnChanged = false;
 }

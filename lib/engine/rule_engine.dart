@@ -15,6 +15,7 @@ class RuleValidationResult {
 class RuleState {
   final Suit? forcedSuit;
   final Rank? requestedRank;
+  final Suit? requestedCardSuit;
   final Suit? questionSuit;
   final int pendingDraw;
   final bool clockwise;
@@ -22,10 +23,15 @@ class RuleState {
   final bool skipCancelable;
   final Set<String> nikoPending;
   final Set<String> nikoDeclared;
+  final CardColor? activeJokerColor;
+  final CardColor? requiredJokerColor;
+  final DateTime? turnDeadline;
+  final Map<String, int> idleStrikes;
 
    const RuleState({
     this.forcedSuit,
     this.requestedRank,
+    this.requestedCardSuit,
     this.questionSuit,
     this.pendingDraw = 0,
     this.clockwise = true,
@@ -33,14 +39,21 @@ class RuleState {
     this.skipCancelable = false,
     Set<String>? nikoPending,
     Set<String>? nikoDeclared,
+    this.activeJokerColor,
+    this.requiredJokerColor,
+    this.turnDeadline,
+    Map<String, int>? idleStrikes,
   })  : nikoPending = nikoPending ?? const <String>{},
-        nikoDeclared = nikoDeclared ?? const <String>{};
+        nikoDeclared = nikoDeclared ?? const <String>{},
+        idleStrikes = idleStrikes ?? const <String, int>{};
 
   RuleState copyWith({
     Suit? forcedSuit,
     bool clearForcedSuit = false,
     Rank? requestedRank,
     bool clearRequestedRank = false,
+    Suit? requestedCardSuit,
+    bool clearRequestedCardSuit = false,
     Suit? questionSuit,
     bool clearQuestionSuit = false,
     int? pendingDraw,
@@ -49,6 +62,13 @@ class RuleState {
     bool? skipCancelable,
     Set<String>? nikoPending,
     Set<String>? nikoDeclared,
+    CardColor? activeJokerColor,
+    bool clearActiveJokerColor = false,
+    CardColor? requiredJokerColor,
+    bool clearRequiredJokerColor = false,
+    DateTime? turnDeadline,
+    bool clearTurnDeadline = false,
+    Map<String, int>? idleStrikes,
   }) {
     return RuleState(
       forcedSuit: clearForcedSuit
@@ -57,6 +77,9 @@ class RuleState {
       requestedRank: clearRequestedRank
           ? null
           : (requestedRank ?? this.requestedRank),
+      requestedCardSuit: clearRequestedCardSuit
+          ? null
+          : (requestedCardSuit ?? this.requestedCardSuit),
       questionSuit: clearQuestionSuit
           ? null
           : (questionSuit ?? this.questionSuit),
@@ -66,6 +89,15 @@ class RuleState {
       skipCancelable: skipCancelable ?? this.skipCancelable,
       nikoPending: nikoPending ?? this.nikoPending,
       nikoDeclared: nikoDeclared ?? this.nikoDeclared,
+      activeJokerColor: clearActiveJokerColor
+          ? null
+          : (activeJokerColor ?? this.activeJokerColor),
+      requiredJokerColor: clearRequiredJokerColor
+          ? null
+          : (requiredJokerColor ?? this.requiredJokerColor),
+      turnDeadline:
+          clearTurnDeadline ? null : (turnDeadline ?? this.turnDeadline),
+      idleStrikes: idleStrikes ?? this.idleStrikes,
     );
   }
 
@@ -74,6 +106,7 @@ class RuleState {
   Map<String, dynamic> toDebugJson() => {
         'forcedSuit': forcedSuit?.name,
         'requestedRank': requestedRank?.name,
+        'requestedCardSuit': requestedCardSuit?.name,
         'questionSuit': questionSuit?.name,
         'pendingDraw': pendingDraw,
         'clockwise': clockwise,
@@ -81,18 +114,31 @@ class RuleState {
         'skipCancelable': skipCancelable,
         'nikoPending': nikoPending.toList(),
         'nikoDeclared': nikoDeclared.toList(),
+        'activeJokerColor': activeJokerColor?.name,
+        'requiredJokerColor': requiredJokerColor?.name,
+        'turnDeadline': turnDeadline?.toIso8601String(),
+        'idleStrikes': idleStrikes,
       };
 }
 
       class RuleEngine {
       /// Validates whether [card] may be played given [state] and current [topCard].
-      static RuleValidationResult canPlay({
+  static RuleValidationResult canPlay({
     required RuleState state,
     required KadiCard card,
     required KadiCard topCard,
     required List<KadiCard> playerHand,
     bool isSkipTarget = false,
   }) {
+    if (state.requiredJokerColor != null) {
+      if (!card.isJoker || card.color != state.requiredJokerColor) {
+        return RuleValidationResult.invalid(
+          'You must play a ${state.requiredJokerColor!.label} Joker.',
+        );
+      }
+      return const RuleValidationResult.valid();
+    }
+
     // If a penalty is pending the only valid actions are stacking penalty or
     // canceling with an Ace.
     if (state.pendingDraw > 0) {
@@ -142,20 +188,47 @@ class RuleState {
 
     // Ace of spades request.
     if (state.requestedRank != null) {
-      final hasRequested =
-          playerHand.any((c) => c.rank == state.requestedRank && !c.isJoker);
-      if (hasRequested && card.rank != state.requestedRank) {
-        return RuleValidationResult.invalid(
-          'You were asked for ${state.requestedRank!.label}.',
-        );
+      final requiredSuit = state.requestedCardSuit;
+      final hasRequested = playerHand.any((c) {
+        if (c.rank != state.requestedRank) return false;
+        if (c.isJoker) return false;
+        if (requiredSuit != null && c.suit != requiredSuit) return false;
+        return true;
+      });
+      final matchesRank = card.rank == state.requestedRank;
+      final matchesSuit = state.requestedCardSuit == null || card.suit == state.requestedCardSuit;
+      if (hasRequested && (!matchesRank || !matchesSuit)) {
+        final label = state.requestedCardSuit != null
+            ? '${state.requestedRank!.label} of ${state.requestedCardSuit!.label}'
+            : state.requestedRank!.label;
+        return RuleValidationResult.invalid('You were asked for $label.');
       }
-      if (card.rank == state.requestedRank) {
+      if (matchesRank && matchesSuit) {
         return const RuleValidationResult.valid();
       }
       // If player does not hold requested rank fall back to normal matching.
     }
 
     if (card.isJoker) {
+      if (topCard.isAceOfSpades && state.activeJokerColor == null) {
+        return const RuleValidationResult.invalid(
+          'You cannot play a Joker on top of the Ace of Spades immediately.',
+        );
+      }
+      final CardColor targetColor;
+      if (state.forcedSuit != null) {
+        targetColor =
+            (state.forcedSuit == Suit.hearts || state.forcedSuit == Suit.diamonds)
+                ? CardColor.red
+                : CardColor.black;
+      } else {
+        targetColor = topCard.color;
+      }
+      if (card.color != targetColor) {
+        return RuleValidationResult.invalid(
+          'You must match Joker color to the top card.',
+        );
+      }
       return const RuleValidationResult.valid();
     }
 
@@ -179,6 +252,7 @@ class RuleState {
     required KadiCard card,
     Suit? chosenSuit,
     Rank? requestedRank,
+    Suit? requestedCardSuit,
   }) {
     RuleState result = state;
 
@@ -187,7 +261,10 @@ class RuleState {
       result = result.copyWith(clearForcedSuit: true);
     }
     if (state.requestedRank != null && card.rank == state.requestedRank) {
-      result = result.copyWith(clearRequestedRank: true);
+      final matchesSuit = state.requestedCardSuit == null || card.suit == state.requestedCardSuit;
+      if (matchesSuit) {
+        result = result.copyWith(clearRequestedRank: true, clearRequestedCardSuit: true);
+      }
     }
     if (state.questionSuit != null && card.suit == state.questionSuit) {
       result = result.copyWith(clearQuestionSuit: true);
@@ -197,6 +274,8 @@ class RuleState {
       result = result.copyWith(
         pendingDraw: state.pendingDraw + card.penaltyValue,
         skipCancelable: false,
+        activeJokerColor: card.color,
+        clearRequiredJokerColor: true,
       );
       return result;
     }
@@ -215,14 +294,19 @@ class RuleState {
           pendingDraw: 0,
           clearForcedSuit: true,
           clearRequestedRank: true,
+          clearRequestedCardSuit: true,
           skipCancelable: false,
+          requiredJokerColor: state.activeJokerColor,
+          clearActiveJokerColor: true,
         );
         return result;
       }
       if (card.isAceOfSpades && requestedRank != null) {
         result = result.copyWith(
           requestedRank: requestedRank,
+          requestedCardSuit: requestedCardSuit,
           skipCancelable: false,
+          clearForcedSuit: true,
         );
         return result;
       }
@@ -230,6 +314,7 @@ class RuleState {
         result = result.copyWith(
           forcedSuit: chosenSuit,
           skipCancelable: false,
+          clearRequestedCardSuit: true,
         );
       }
       return result;
@@ -255,7 +340,7 @@ class RuleState {
     }
 
     // Ordinary card clears skip cancel window.
-    return result.copyWith(skipCancelable: false);
+    return result.copyWith(skipCancelable: false, clearActiveJokerColor: true);
   }
 
   static int nextPlayerIndex({
@@ -299,9 +384,16 @@ class RuleState {
     required List<KadiCard> playerHand,
   }) {
     if (state.requestedRank == null) return state;
-    final hasRank = playerHand.any((c) => c.rank == state.requestedRank && !c.isJoker);
+    final hasRank = playerHand.any((c) {
+      if (c.rank != state.requestedRank) return false;
+      if (c.isJoker) return false;
+      if (state.requestedCardSuit != null && c.suit != state.requestedCardSuit) {
+        return false;
+      }
+      return true;
+    });
     if (!hasRank) {
-      return state.copyWith(clearRequestedRank: true);
+      return state.copyWith(clearRequestedRank: true, clearRequestedCardSuit: true);
     }
     return state;
   }
