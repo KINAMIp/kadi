@@ -48,6 +48,8 @@ class GameService {
     final state = GameState(
       id: id,
       players: [host],
+      hostUid: hostUid,
+      hostName: hostName,
       drawPile: const [],
       discardPile: const [],
       turnIndex: 0,
@@ -80,14 +82,18 @@ class GameService {
       final players = List<KadiPlayer>.from(state.players)
         ..add(KadiPlayer(uid: uid, name: name, hand: const []));
 
+      var eventLog = _appendLog(state.eventLog, '$name joined the room');
+      if (players.length >= state.maxPlayers) {
+        eventLog = _appendLog(
+          eventLog,
+          'Room is full. Waiting for ${state.hostName} to start the game.',
+        );
+      }
+
       room.state = state.copyWith(
         players: players,
-        eventLog: _appendLog(state.eventLog, '$name joined the room'),
+        eventLog: eventLog,
       );
-
-      if (players.length >= 2 && players.length == state.maxPlayers) {
-        _startRound(room);
-      }
 
       return true;
     });
@@ -103,6 +109,19 @@ class GameService {
       final players = List<KadiPlayer>.from(state.players)
         ..removeWhere((p) => p.uid == uid);
 
+      var hostUid = state.hostUid;
+      var hostName = state.hostName;
+      List<String> eventLog = state.eventLog;
+
+      if (uid == state.hostUid && players.isNotEmpty) {
+        hostUid = players.first.uid;
+        hostName = players.first.name;
+        eventLog = _appendLog(
+          eventLog,
+          '${players.first.name} is now the host',
+        );
+      }
+
       if (players.isEmpty) {
         room.rules = const RuleState();
         room.state = state.copyWith(
@@ -112,7 +131,9 @@ class GameService {
           discardPile: const <KadiCard>[],
           turnIndex: 0,
           winnerUid: null,
-          eventLog: _appendLog(state.eventLog, 'All players left. Room reset'),
+          hostUid: hostUid,
+          hostName: hostName,
+          eventLog: _appendLog(eventLog, 'All players left. Room reset'),
         );
         return true;
       }
@@ -125,7 +146,9 @@ class GameService {
         gameStatus: 'waiting',
         turnIndex: 0,
         winnerUid: null,
-        eventLog: _appendLog(state.eventLog, 'Player left the game'),
+        hostUid: hostUid,
+        hostName: hostName,
+        eventLog: _appendLog(eventLog, 'Player left the game'),
       );
       return true;
     });
@@ -387,6 +410,42 @@ class GameService {
     });
   }
 
+  Future<void> startGame(String gameId, String requesterUid) async {
+    await _mutate(gameId, (room) {
+      final state = room.state;
+      if (state.gameStatus != 'waiting') {
+        return false;
+      }
+      if (state.players.length < state.maxPlayers) {
+        return false;
+      }
+      if (state.hostUid != requesterUid) {
+        return false;
+      }
+
+      final hostPlayer = state.players.firstWhere(
+        (p) => p.uid == state.hostUid,
+        orElse: () => state.players.isEmpty
+            ? KadiPlayer(
+                uid: state.hostUid,
+                name: state.hostName,
+                hand: const [],
+              )
+            : state.players.first,
+      );
+
+      room.state = state.copyWith(
+        eventLog: _appendLog(
+          state.eventLog,
+          '${hostPlayer.name} started the game',
+        ),
+      );
+
+      _startRound(room);
+      return true;
+    });
+  }
+
   Future<void> declareNikoKadi(String gameId, String playerId) async {
     await _mutate(gameId, (room) {
       if (room.state.gameStatus != 'playing') {
@@ -546,24 +605,42 @@ class GameService {
           return;
         }
         final room = _roomFromData(snapshot.data()!);
-        if (room.state.gameStatus != 'finished') {
+        final state = room.state;
+        if (state.gameStatus != 'finished') {
           return;
         }
-        if (room.state.players.length < 2) {
-          room.rules = const RuleState();
-          room.state = room.state.copyWith(
+        room.rules = const RuleState();
+
+        final resetPlayers = state.players
+            .map((p) => p.copyWith(hand: const <KadiCard>[]))
+            .toList();
+
+        if (state.players.length < 2) {
+          room.state = state.copyWith(
+            players: resetPlayers,
             gameStatus: 'waiting',
             drawPile: const <KadiCard>[],
             discardPile: const <KadiCard>[],
             turnIndex: 0,
             winnerUid: null,
             eventLog: _appendLog(
-              room.state.eventLog,
+              state.eventLog,
               'Waiting for more players',
             ),
           );
         } else {
-          _startRound(room);
+          room.state = state.copyWith(
+            players: resetPlayers,
+            gameStatus: 'waiting',
+            drawPile: const <KadiCard>[],
+            discardPile: const <KadiCard>[],
+            turnIndex: 0,
+            winnerUid: null,
+            eventLog: _appendLog(
+              state.eventLog,
+              'Round finished. Waiting for ${state.hostName} to start the next game.',
+            ),
+          );
         }
         final data = _serializeRoom(room);
         txn.set(ref, data);

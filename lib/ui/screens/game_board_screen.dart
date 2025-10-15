@@ -92,8 +92,10 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
                 : state.players.first,
           );
 
-          final isMyTurn = state.players.isNotEmpty &&
+          final isMyTurn = state.gameStatus == 'playing' &&
+              state.players.isNotEmpty &&
               state.players[state.turnIndex % state.players.length].uid == me.uid;
+          final isHost = me.uid == state.hostUid;
 
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _handleStateSideEffects(state, me);
@@ -106,7 +108,12 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: _buildArena(state, me.uid),
+                  child: _buildArena(
+                    state,
+                    me.uid,
+                    isHost: isHost,
+                    onStartGame: () => _svc.startGame(widget.roomCode),
+                  ),
                 ),
               ),
               _buildBottomSection(state, me, isMyTurn),
@@ -119,9 +126,30 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
 
   Widget _buildTopHud(GameState state, KadiPlayer me, bool isMyTurn) {
     final players = state.players;
-    final current = players.isNotEmpty
+    final isPlaying = state.gameStatus == 'playing';
+    final current = isPlaying && players.isNotEmpty
         ? players[state.turnIndex % players.length]
         : null;
+    final hostPlayer = players.firstWhere(
+      (p) => p.uid == state.hostUid,
+      orElse: () => players.isNotEmpty
+          ? players.first
+          : KadiPlayer(uid: state.hostUid, name: state.hostName, hand: const []),
+    );
+    final headline = current != null
+        ? 'Current turn: ${current.name}'
+        : players.length < state.maxPlayers
+            ? 'Waiting for players (${players.length}/${state.maxPlayers})'
+            : 'Waiting for ${hostPlayer.name} to start';
+    final subtext = isPlaying
+        ? (isMyTurn
+            ? "It's your move!"
+            : 'You have ${me.hand.length} card${me.hand.length == 1 ? '' : 's'}')
+        : players.length < state.maxPlayers
+            ? 'Waiting for more players to join'
+            : me.uid == state.hostUid
+                ? 'Start the game when everyone is ready'
+                : 'Waiting for ${hostPlayer.name} to begin';
     return SizedBox(
       height: 180,
       child: Stack(
@@ -146,9 +174,7 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            current == null
-                                ? 'Waiting for players'
-                                : 'Current turn: ${current.name}',
+                            headline,
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 18,
@@ -157,18 +183,21 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            isMyTurn
-                                ? 'It\'s your move!'
-                                : 'You have ${me.hand.length} card${me.hand.length == 1 ? '' : 's'}',
+                            subtext,
                             style: TextStyle(
-                              color: isMyTurn ? Colors.amberAccent : Colors.white70,
+                              color: isPlaying && isMyTurn
+                                  ? Colors.amberAccent
+                                  : Colors.white70,
                             ),
                           ),
                         ],
                       ),
                     ),
                     const SizedBox(width: 12),
-                    _buildTurnTimerIndicator(current?.uid == _svc.uid),
+                    _buildTurnTimerIndicator(
+                      isMyTurn: current?.uid == _svc.uid,
+                      isActive: isPlaying,
+                    ),
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -256,10 +285,14 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
     );
   }
 
-  Widget _buildTurnTimerIndicator(bool isMyTurn) {
-    final progress = _turnSecondsLeft <= 0
+  Widget _buildTurnTimerIndicator({
+    required bool isMyTurn,
+    required bool isActive,
+  }) {
+    final progress = !isActive || _turnSecondsLeft <= 0
         ? 0.0
         : _turnSecondsLeft / _turnDurationSeconds;
+    final displayText = isActive ? _turnSecondsLeft.toString() : '--';
     return Stack(
       alignment: Alignment.center,
       children: [
@@ -271,12 +304,16 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
             strokeWidth: 5,
             backgroundColor: Colors.white10,
             valueColor: AlwaysStoppedAnimation<Color>(
-              isMyTurn ? Colors.amberAccent : Colors.lightBlueAccent,
+              !isActive
+                  ? Colors.white24
+                  : isMyTurn
+                      ? Colors.amberAccent
+                      : Colors.lightBlueAccent,
             ),
           ),
         ),
         Text(
-          _turnSecondsLeft.toString(),
+          displayText,
           style: const TextStyle(
             color: Colors.white,
             fontWeight: FontWeight.bold,
@@ -287,7 +324,12 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
     );
   }
 
-  Widget _buildArena(GameState state, String myId) {
+  Widget _buildArena(
+    GameState state,
+    String myId, {
+    required bool isHost,
+    required VoidCallback onStartGame,
+  }) {
     final players = state.players;
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -308,6 +350,8 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
         final radius = circleDiameter / 2;
         final angleStep = (2 * math.pi) / players.length;
         const startAngle = -math.pi / 2;
+        final canStart =
+            state.gameStatus == 'waiting' && players.length == state.maxPlayers;
 
         return Stack(
           children: [
@@ -330,7 +374,12 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
             ),
             Align(
               alignment: Alignment.center,
-              child: _buildCenterStatus(state),
+              child: _buildCenterStatus(
+                state,
+                isHost: isHost,
+                canStart: canStart,
+                onStartGame: onStartGame,
+              ),
             ),
             for (var i = 0; i < players.length; i++)
               _buildSeat(
@@ -403,7 +452,89 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
     );
   }
 
-  Widget _buildCenterStatus(GameState state) {
+  Widget _buildCenterStatus(
+    GameState state, {
+    required bool isHost,
+    required bool canStart,
+    required VoidCallback onStartGame,
+  }) {
+    final isPlaying = state.gameStatus == 'playing';
+    final hostPlayer = state.players.firstWhere(
+      (p) => p.uid == state.hostUid,
+      orElse: () => state.players.isNotEmpty
+          ? state.players.first
+          : KadiPlayer(uid: state.hostUid, name: state.hostName, hand: const []),
+    );
+
+    if (!isPlaying) {
+      final waitingMessage = state.players.length < state.maxPlayers
+          ? 'Waiting for players (${state.players.length}/${state.maxPlayers})'
+          : isHost
+              ? 'Room is full. Start the game when everyone is ready.'
+              : 'Waiting for ${hostPlayer.name} to start the game.';
+      final secondaryMessage = state.players.length < state.maxPlayers
+          ? 'Share the room code to invite more players.'
+          : canStart
+              ? (isHost
+                  ? 'You can begin the match at any time.'
+                  : 'All players are ready. Hang tight!')
+              : 'Getting things ready...';
+      return Container(
+        width: 260,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          color: Colors.black.withOpacity(0.4),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              waitingMessage,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              secondaryMessage,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            if (canStart && isHost) ...[
+              const SizedBox(height: 18),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.play_arrow),
+                label: const Text(
+                  'Start game',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.amberAccent,
+                  foregroundColor: Colors.black,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                onPressed: onStartGame,
+              ),
+            ] else if (canStart) ...[
+              const SizedBox(height: 18),
+              Text(
+                'Waiting for ${hostPlayer.name}...',
+                style: const TextStyle(color: Colors.white60),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
     final top = state.discardPile.isNotEmpty ? state.discardPile.last : null;
     String status;
     if (state.pendingDraw > 0) {
@@ -488,43 +619,24 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
             spacing: 16,
             runSpacing: 12,
             children: [
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFFFFC857), Color(0xFFFF6F91)],
-                  ),
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.3),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: ElevatedButton.icon(
-                  icon: const Icon(Icons.catching_pokemon),
-                  label: const Text(
-                    'Pick',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    shadowColor: Colors.transparent,
-                    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
-                  ),
-                  onPressed: isMyTurn ? () => _svc.drawCard(widget.roomCode) : null,
-                ),
-              ),
               ElevatedButton.icon(
-                icon: const Icon(Icons.block),
-                label: const Text('Pass'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.black54,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 14),
+                icon: const Icon(Icons.catching_pokemon),
+                label: const Text(
+                  'Pick',
+                  style: TextStyle(fontWeight: FontWeight.bold),
                 ),
-                onPressed: isMyTurn ? () => _svc.passTurn(widget.roomCode) : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFB74D),
+                  foregroundColor: Colors.black,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  elevation: 6,
+                  shadowColor: Colors.black45,
+                ),
+                onPressed: isMyTurn ? () => _svc.drawCard(widget.roomCode) : null,
               ),
               if (nikoEligible)
                 ElevatedButton(
@@ -650,12 +762,22 @@ class _GameBoardScreenState extends State<GameBoardScreen> {
   void _handleStateSideEffects(GameState state, KadiPlayer me) {
     if (!mounted) return;
     final players = state.players;
-    final newCurrentPlayerId = players.isEmpty
-        ? null
-        : players[state.turnIndex % players.length].uid;
-    if (newCurrentPlayerId != _currentTurnPlayerId) {
-      _currentTurnPlayerId = newCurrentPlayerId;
-      _startTurnTimer();
+    if (state.gameStatus != 'playing') {
+      _currentTurnPlayerId = null;
+      _turnTimer?.cancel();
+      if (_turnSecondsLeft != 0) {
+        setState(() {
+          _turnSecondsLeft = 0;
+        });
+      }
+    } else {
+      final newCurrentPlayerId = players.isEmpty
+          ? null
+          : players[state.turnIndex % players.length].uid;
+      if (newCurrentPlayerId != _currentTurnPlayerId) {
+        _currentTurnPlayerId = newCurrentPlayerId;
+        _startTurnTimer();
+      }
     }
 
     final top = state.discardPile.isNotEmpty ? state.discardPile.last : null;

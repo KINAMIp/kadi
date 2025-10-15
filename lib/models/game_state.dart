@@ -6,6 +6,8 @@ class GameState {
 
   final String id;
   final List<KadiPlayer> players;
+  final String hostUid;
+  final String hostName;
   final List<KadiCard> drawPile;
   final List<KadiCard> discardPile;
   final int turnIndex;
@@ -33,6 +35,8 @@ class GameState {
     required this.turnIndex,
     required this.gameStatus,
     required this.createdAt,
+    required this.hostUid,
+    required this.hostName,
     this.requiredSuit,
     this.requestedRank,
     this.requestedCardSuit,
@@ -55,6 +59,8 @@ class GameState {
   GameState copyWith({
     String? id,
     List<KadiPlayer>? players,
+    String? hostUid,
+    String? hostName,
     List<KadiCard>? drawPile,
     List<KadiCard>? discardPile,
     int? turnIndex,
@@ -77,6 +83,8 @@ class GameState {
       GameState(
         id: id ?? this.id,
         players: players ?? List<KadiPlayer>.from(this.players),
+        hostUid: hostUid ?? this.hostUid,
+        hostName: hostName ?? this.hostName,
         drawPile: drawPile ?? List<KadiCard>.from(this.drawPile),
         discardPile: discardPile ?? List<KadiCard>.from(this.discardPile),
         turnIndex: turnIndex ?? this.turnIndex,
@@ -117,6 +125,8 @@ class GameState {
         'turnIndex': turnIndex,
         'gameStatus': gameStatus,
         'createdAt': createdAt.toIso8601String(),
+        'hostUid': hostUid,
+        'hostName': hostName,
         'requiredSuit': requiredSuit?.name,
         'requestedRank': requestedRank?.name,
         'requestedCardSuit': requestedCardSuit?.name,
@@ -146,6 +156,8 @@ class GameState {
         turnIndex: (json['turnIndex'] ?? 0) as int,
         gameStatus: (json['gameStatus'] ?? 'waiting') as String,
         createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
+        hostUid: (json['hostUid'] as String?) ?? '',
+        hostName: (json['hostName'] as String?) ?? 'Host',
         requiredSuit: (json['requiredSuit'] as String?) == null
             ? null
             : Suit.values.firstWhere((e) => e.name == json['requiredSuit']),
