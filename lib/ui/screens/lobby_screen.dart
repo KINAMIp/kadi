@@ -16,6 +16,7 @@ class _LobbyScreenState extends State<LobbyScreen>
   final _nicknameController = TextEditingController();
   final _roomCodeController = TextEditingController();
   final OnlineService _onlineService = OnlineService();
+  final ScrollController _pageScrollController = ScrollController();
 
   bool _isLoggedIn = false;
   bool _creatingRoom = false;
@@ -30,6 +31,7 @@ class _LobbyScreenState extends State<LobbyScreen>
     _glowController.dispose();
     _nicknameController.dispose();
     _roomCodeController.dispose();
+    _pageScrollController.dispose();
     super.dispose();
   }
 
@@ -106,13 +108,18 @@ class _LobbyScreenState extends State<LobbyScreen>
           Positioned.fill(
             child: SafeArea(
               child: Center(
-                child: SingleChildScrollView(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 980),
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
+                child: Scrollbar(
+                  controller: _pageScrollController,
+                  thumbVisibility: true,
+                  radius: const Radius.circular(16),
+                  child: SingleChildScrollView(
+                    controller: _pageScrollController,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 24, vertical: 16),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 980),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
                         final isWide = constraints.maxWidth > 780;
                         final formContent = _buildFormContent(isWide);
                         return AnimatedContainer(
@@ -366,7 +373,7 @@ class _LobbyScreenState extends State<LobbyScreen>
               SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Seats glow when selected so the lobby instantly knows your capacity.',
+                  'Choose how many chairs to reserve before sharing your invite.',
                   style: TextStyle(color: Colors.white54, fontSize: 12),
                 ),
               ),
