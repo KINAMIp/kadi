@@ -168,6 +168,14 @@ class RuleEngine {
 
     // Question follow-up: must play matching suit and ordinary number.
     if (state.questionSuit != null) {
+      final bool isQuestionChain =
+          card.isQuestionCard && state.comboRank == card.rank;
+      if (card.isAce) {
+        return const RuleValidationResult.valid();
+      }
+      if (isQuestionChain) {
+        return const RuleValidationResult.valid();
+      }
       if (card.suit != state.questionSuit) {
         return RuleValidationResult.invalid(
           'You must answer the question with a ${state.questionSuit!.name} card.',
@@ -210,6 +218,9 @@ class RuleEngine {
         if (requiredSuit != null && c.suit != requiredSuit) return false;
         return true;
       });
+      if (card.isAce && !card.isAceOfSpades) {
+        return const RuleValidationResult.valid();
+      }
       final matchesRank = card.rank == state.requestedRank;
       final matchesSuit = state.requestedCardSuit == null || card.suit == state.requestedCardSuit;
       final label = state.requestedCardSuit != null
@@ -305,17 +316,18 @@ class RuleEngine {
     }
 
     if (card.isAce) {
-      if (state.pendingDraw > 0) {
+      final bool canceledPenalty = state.pendingDraw > 0;
+      if (canceledPenalty) {
         result = result.copyWith(
           pendingDraw: 0,
           clearForcedSuit: true,
           clearRequestedRank: true,
           clearRequestedCardSuit: true,
+          clearQuestionSuit: true,
           skipCancelable: false,
-          requiredJokerColor: state.activeJokerColor,
+          clearRequiredJokerColor: true,
           clearActiveJokerColor: true,
         );
-        return result;
       }
       if (card.isAceOfSpades && requestedRank != null) {
         result = result.copyWith(
@@ -323,14 +335,22 @@ class RuleEngine {
           requestedCardSuit: requestedCardSuit,
           skipCancelable: false,
           clearForcedSuit: true,
+          clearQuestionSuit: true,
+          clearActiveJokerColor: true,
         );
+        return result;
+      }
+      if (canceledPenalty) {
         return result;
       }
       final Suit targetSuit = chosenSuit ?? card.suit;
       result = result.copyWith(
         forcedSuit: targetSuit,
         skipCancelable: false,
+        clearRequestedRank: true,
         clearRequestedCardSuit: true,
+        clearQuestionSuit: true,
+        clearActiveJokerColor: true,
       );
       return result;
     }

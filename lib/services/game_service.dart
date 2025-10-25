@@ -240,6 +240,7 @@ class GameService {
       players[state.turnIndex] = turnPlayer.copyWith(hand: updatedHand);
 
       var rules = room.rules;
+      final previousRules = rules;
       final nikoRequired =
           rules.nikoPending.contains(playerId) || rules.nikoDeclared.contains(playerId);
       final nikoDeclared = rules.nikoDeclared.contains(playerId);
@@ -251,6 +252,14 @@ class GameService {
         );
       }
 
+      final logMessage = _describePlay(
+        turnPlayer.name,
+        card,
+        resolvedChosenSuit,
+        requestedRank,
+        requestedCardSuit,
+      );
+
       rules = RuleEngine.applyCardEffect(
         state: rules,
         card: card,
@@ -259,17 +268,20 @@ class GameService {
         requestedCardSuit: requestedCardSuit,
       );
 
+      final notices = _buildActionNotices(
+        playerName: turnPlayer.name,
+        card: card,
+        chosenSuit: resolvedChosenSuit,
+        requestedRank: requestedRank,
+        requestedCardSuit: requestedCardSuit,
+        previous: previousRules,
+        updated: rules,
+      );
+      final logEntries = <String>[logMessage, ...notices];
+
       final updatedStrikes = Map<String, int>.from(rules.idleStrikes);
       updatedStrikes.remove(playerId);
       rules = rules.copyWith(idleStrikes: updatedStrikes);
-
-      final logMessage = _describePlay(
-        turnPlayer.name,
-        card,
-        resolvedChosenSuit,
-        requestedRank,
-        requestedCardSuit,
-      );
 
       if (updatedHand.isNotEmpty) {
         final canChain =
@@ -286,7 +298,7 @@ class GameService {
             discardPile: discard,
             drawPile: drawPile,
             turnIndex: state.turnIndex,
-            eventLog: _appendLog(state.eventLog, logMessage),
+            eventLog: _appendLogEntries(state.eventLog, logEntries),
           );
           room.turnChanged = true;
           return true;
@@ -329,8 +341,11 @@ class GameService {
           );
 
           final drawCount = drawResult.drawn.length;
-          final message = '$logMessage but another player had no cards, so '
-              '${turnPlayer.name} drew $drawCount card${drawCount == 1 ? '' : 's'}.';
+          final fallbackEntries = <String>[
+            '$logMessage but another player had no cards, so '
+                '${turnPlayer.name} drew $drawCount card${drawCount == 1 ? '' : 's'}.',
+            ...notices,
+          ];
 
           room.rules = rules.copyWith(
             turnDeadline: DateTime.now().add(_turnDuration),
@@ -341,7 +356,7 @@ class GameService {
             drawPile: drawPile,
             turnIndex: nextIndex,
             winnerUid: null,
-            eventLog: _appendLog(state.eventLog, message),
+            eventLog: _appendLogEntries(state.eventLog, fallbackEntries),
           );
           room.turnChanged = true;
           return true;
@@ -358,7 +373,7 @@ class GameService {
             drawPile: drawPile,
             gameStatus: 'finished',
             winnerUid: playerId,
-            eventLog: _appendLog(state.eventLog, logMessage),
+            eventLog: _appendLogEntries(state.eventLog, logEntries),
           );
           room.state = finished;
           room.scheduleRestart = true;
@@ -376,9 +391,12 @@ class GameService {
             drawPile: drawPile,
             turnIndex: nextIndex,
             winnerUid: null,
-            eventLog: _appendLog(
+            eventLog: _appendLogEntries(
               state.eventLog,
-              '$logMessage (no Niko Kadi call)',
+              [
+                '$logMessage (no Niko Kadi call)',
+                ...notices,
+              ],
             ),
           );
           room.rules = rules.copyWith(
@@ -410,7 +428,7 @@ class GameService {
         discardPile: discard,
         drawPile: drawPile,
         turnIndex: nextIndex,
-        eventLog: _appendLog(state.eventLog, logMessage),
+        eventLog: _appendLogEntries(state.eventLog, logEntries),
       );
       room.turnChanged = true;
       return true;
@@ -456,6 +474,9 @@ class GameService {
       players[state.turnIndex] = turnPlayer.copyWith(hand: newHand);
 
       var rules = room.rules;
+      final wasRequestActive = room.rules.requestedRank != null;
+      final requestedSuit = room.rules.requestedCardSuit;
+      final requestedRank = room.rules.requestedRank;
       String message;
       if (room.rules.pendingDraw > 0) {
         message = '${turnPlayer.name} drew ${drawResult.drawn.length} penalty cards';
@@ -471,6 +492,13 @@ class GameService {
       } else if (room.rules.questionSuit != null) {
         message = '${turnPlayer.name} failed the question and drew a card';
         rules = rules.copyWith(clearQuestionSuit: true, skipCancelable: false);
+      } else if (wasRequestActive && requestedRank != null && requestedSuit != null) {
+        message =
+            '${turnPlayer.name} picked 1 card after missing ${requestedRank.label} of ${requestedSuit.label}.';
+        rules = rules.copyWith(
+          clearRequestedRank: true,
+          clearRequestedCardSuit: true,
+        );
       } else {
         message = '${turnPlayer.name} drew a card';
       }
@@ -491,11 +519,18 @@ class GameService {
       }
 
       room.rules = rules;
+      final drawNotices = <String>[];
+      if (wasRequestActive && requestedRank != null && requestedSuit != null) {
+        drawNotices.add(
+          'Request cleared. Play continues from the Ace of Spades matching suit or rank.',
+        );
+      }
+
       room.state = state.copyWith(
         players: players,
         drawPile: drawResult.drawPile,
         discardPile: drawResult.discardPile,
-        eventLog: _appendLog(state.eventLog, message),
+        eventLog: _appendLogEntries(state.eventLog, [message, ...drawNotices]),
       );
 
       if (room.rules.pendingDraw == 0 && room.rules.questionSuit == null) {
@@ -635,9 +670,9 @@ class GameService {
       );
 
       room.state = room.state.copyWith(
-        eventLog: _appendLog(
+        eventLog: _appendLogEntries(
           room.state.eventLog,
-          '${player.name} called Niko Kadi!',
+          ['${player.name} announced "Niko Kadi".'],
         ),
       );
       return true;
@@ -1140,13 +1175,20 @@ class GameService {
     return _DrawResult(drawPile: draw, discardPile: discard, drawn: drawn);
   }
 
-  List<String> _appendLog(List<String> current, String entry) {
-    final updated = List<String>.from(current)..add(entry);
-    if (updated.length > 30) {
-      updated.removeRange(0, updated.length - 30);
+  List<String> _appendLogEntries(List<String> current, Iterable<String> entries) {
+    final updated = List<String>.from(current);
+    for (final entry in entries) {
+      if (entry.trim().isEmpty) continue;
+      updated.add(entry);
+      if (updated.length > 30) {
+        updated.removeRange(0, updated.length - 30);
+      }
     }
     return updated;
   }
+
+  List<String> _appendLog(List<String> current, String entry) =>
+      _appendLogEntries(current, [entry]);
 
   String _describePlay(
     String playerName,
@@ -1181,6 +1223,83 @@ class GameService {
       buffer.write(' (question)');
     }
     return buffer.toString();
+  }
+
+  List<String> _buildActionNotices({
+    required String playerName,
+    required KadiCard card,
+    required Suit? chosenSuit,
+    required Rank? requestedRank,
+    required Suit? requestedCardSuit,
+    required RuleState previous,
+    required RuleState updated,
+  }) {
+    final notices = <String>[];
+
+    if (previous.pendingDraw > 0 && updated.pendingDraw == 0 && card.isAce) {
+      notices.add('$playerName canceled the penalty.');
+    }
+
+    if (card.isPenaltyCard && updated.pendingDraw > 0) {
+      final total = updated.pendingDraw;
+      final label = total == 1 ? 'card' : 'cards';
+      notices.add(
+        'Penalty is now +$total $label. Stack another 2, 3, or matching-color Joker, or cancel with an Ace.',
+      );
+    }
+
+    if (card.isAceOfSpades && requestedRank != null && requestedCardSuit != null) {
+      notices.add(
+        'Next player must play ${requestedRank.label} of ${requestedCardSuit.label} or pick 1 card. Any other Ace cancels the request.',
+      );
+    }
+
+    if (card.isAce && !card.isAceOfSpades && previous.pendingDraw == 0) {
+      final target = chosenSuit ?? card.suit;
+      notices.add(
+        'Suit changed to ${target.label}. Next player must follow ${target.label} or play an Ace.',
+      );
+    }
+
+    if (previous.requestedRank != null && updated.requestedRank == null &&
+        card.isAce && !card.isAceOfSpades) {
+      final target = updated.forcedSuit ?? card.suit;
+      notices.add(
+        '$playerName canceled the request. Play now follows ${target.label}.',
+      );
+    }
+
+    if (card.rank == Rank.jack) {
+      if (previous.skipCancelable && previous.skipCount > 0) {
+        notices.add('$playerName canceled the jump.');
+      } else {
+        final skipTotal = updated.skipCount;
+        final skipped = skipTotal == 1 ? '1 player' : '$skipTotal players';
+        notices.add(
+          '$playerName jumped $skipped. Any player may cancel within 10 seconds by playing a Jack.',
+        );
+      }
+    }
+
+    if (card.rank == Rank.king) {
+      final direction = updated.clockwise ? 'clockwise' : 'counterclockwise';
+      notices.add(
+        'Direction now $direction. Any player may cancel within 10 seconds with a King.',
+      );
+    }
+
+    if (card.isQuestionCard && updated.questionSuit != null) {
+      notices.add(
+        'Answer with an ordinary ${updated.questionSuit!.label} card (4, 5, 6, 7, 9, or 10).',
+      );
+    }
+
+    if (previous.questionSuit != null && updated.questionSuit == null &&
+        !card.isQuestionCard) {
+      notices.add('Question answered. Play continues normally.');
+    }
+
+    return notices;
   }
 }
 
