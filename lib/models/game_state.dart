@@ -13,17 +13,37 @@ class GameState {
   final int turnIndex;
   final String gameStatus; // waiting | playing | finished
   final DateTime createdAt;
-  final Suit? requiredSuit; // suit requested by Ace change
-  final Rank? requestedRank; // Ace of spades request
-  final Suit? requestedCardSuit; // suit requested alongside rank
-  final Suit? questionSuit; // pending 8/Q follow-up suit
+
+  // Active requirements and penalties
+  final Suit? requiredSuit; // suit requested by ace (non spade)
+  final Rank? requestedRank; // Ace of spades requested rank
+  final Suit? requestedCardSuit; // Ace of spades requested suit
+  final String? aceRequesterId; // player who issued the request
+  final Suit? questionSuit; // last question suit that must be answered
+  final Rank? questionAnswerRank; // rank required for subsequent answers
   final int pendingDraw; // accumulated penalty cards to draw
-  final bool clockwise; // true => clockwise, false => counter
-  final int skipCount; // number of players to skip on advance
-  final int maxPlayers; // desired seats in room
+  final String? penaltyStarterId; // player who triggered the pending penalty
+
+  // Direction and skip handling
+  final bool clockwise; // true => clockwise, false => counterclockwise
+  final int skipCount; // players to skip when advancing turn (applied value)
+  final int pendingJumpSkips; // skips waiting for the cancel window to resolve
+  final String? jumpInitiatorId; // player who played jump combo
+  final DateTime? jumpExpiresAt; // cancel deadline for the jump
+
+  final int pendingKickToggles; // pending direction flips awaiting cancel window
+  final String? kickInitiatorId; // player who played kickback combo
+  final DateTime? kickExpiresAt; // cancel deadline for kickback
+
+  // Win state and niko tracking
+  final int maxPlayers;
   final String? winnerUid;
-  final List<String> nikoPending; // players who must announce
-  final List<String> nikoDeclared; // players that already called Niko Kadi
+  final bool waitingForWinnerConfirmation;
+  final List<String> winnerConfirmations;
+  final List<String> nikoPending; // players who must decide whether to announce
+  final List<String> nikoDeclared; // players that already called "Niko Kadi"
+
+  // Timeline and other ui metadata
   final List<String> eventLog; // chronological description of actions
   final CardColor? requiredJokerColor; // forced joker color after cancel
   final String? comboOwnerId; // player allowed to continue identical plays
@@ -42,19 +62,31 @@ class GameState {
     this.requiredSuit,
     this.requestedRank,
     this.requestedCardSuit,
+    this.aceRequesterId,
     this.questionSuit,
+    this.questionAnswerRank,
     this.pendingDraw = 0,
+    this.penaltyStarterId,
     this.clockwise = true,
     this.skipCount = 0,
+    this.pendingJumpSkips = 0,
+    this.jumpInitiatorId,
+    this.jumpExpiresAt,
+    this.pendingKickToggles = 0,
+    this.kickInitiatorId,
+    this.kickExpiresAt,
     this.maxPlayers = 2,
     this.winnerUid,
+    this.waitingForWinnerConfirmation = false,
+    List<String>? winnerConfirmations,
     List<String>? nikoPending,
     List<String>? nikoDeclared,
     List<String>? eventLog,
     this.requiredJokerColor,
     this.comboOwnerId,
     this.comboRank,
-  })  : nikoPending = nikoPending ?? const [],
+  })  : winnerConfirmations = winnerConfirmations ?? const [],
+        nikoPending = nikoPending ?? const [],
         nikoDeclared = nikoDeclared ?? const [],
         eventLog = eventLog ?? const [];
 
@@ -73,12 +105,23 @@ class GameState {
     Object? requiredSuit = _sentinel,
     Object? requestedRank = _sentinel,
     Object? requestedCardSuit = _sentinel,
+    Object? aceRequesterId = _sentinel,
     Object? questionSuit = _sentinel,
+    Object? questionAnswerRank = _sentinel,
     int? pendingDraw,
+    Object? penaltyStarterId = _sentinel,
     bool? clockwise,
     int? skipCount,
+    int? pendingJumpSkips,
+    Object? jumpInitiatorId = _sentinel,
+    Object? jumpExpiresAt = _sentinel,
+    int? pendingKickToggles,
+    Object? kickInitiatorId = _sentinel,
+    Object? kickExpiresAt = _sentinel,
     int? maxPlayers,
     Object? winnerUid = _sentinel,
+    bool? waitingForWinnerConfirmation,
+    List<String>? winnerConfirmations,
     List<String>? nikoPending,
     List<String>? nikoDeclared,
     List<String>? eventLog,
@@ -105,16 +148,43 @@ class GameState {
         requestedCardSuit: identical(requestedCardSuit, _sentinel)
             ? this.requestedCardSuit
             : requestedCardSuit as Suit?,
+        aceRequesterId: identical(aceRequesterId, _sentinel)
+            ? this.aceRequesterId
+            : aceRequesterId as String?,
         questionSuit: identical(questionSuit, _sentinel)
             ? this.questionSuit
             : questionSuit as Suit?,
+        questionAnswerRank: identical(questionAnswerRank, _sentinel)
+            ? this.questionAnswerRank
+            : questionAnswerRank as Rank?,
         pendingDraw: pendingDraw ?? this.pendingDraw,
+        penaltyStarterId: identical(penaltyStarterId, _sentinel)
+            ? this.penaltyStarterId
+            : penaltyStarterId as String?,
         clockwise: clockwise ?? this.clockwise,
         skipCount: skipCount ?? this.skipCount,
+        pendingJumpSkips: pendingJumpSkips ?? this.pendingJumpSkips,
+        jumpInitiatorId: identical(jumpInitiatorId, _sentinel)
+            ? this.jumpInitiatorId
+            : jumpInitiatorId as String?,
+        jumpExpiresAt: identical(jumpExpiresAt, _sentinel)
+            ? this.jumpExpiresAt
+            : jumpExpiresAt as DateTime?,
+        pendingKickToggles: pendingKickToggles ?? this.pendingKickToggles,
+        kickInitiatorId: identical(kickInitiatorId, _sentinel)
+            ? this.kickInitiatorId
+            : kickInitiatorId as String?,
+        kickExpiresAt: identical(kickExpiresAt, _sentinel)
+            ? this.kickExpiresAt
+            : kickExpiresAt as DateTime?,
         maxPlayers: maxPlayers ?? this.maxPlayers,
         winnerUid: identical(winnerUid, _sentinel)
             ? this.winnerUid
             : winnerUid as String?,
+        waitingForWinnerConfirmation:
+            waitingForWinnerConfirmation ?? this.waitingForWinnerConfirmation,
+        winnerConfirmations:
+            winnerConfirmations ?? List<String>.from(this.winnerConfirmations),
         nikoPending: nikoPending ?? List<String>.from(this.nikoPending),
         nikoDeclared: nikoDeclared ?? List<String>.from(this.nikoDeclared),
         eventLog: eventLog ?? List<String>.from(this.eventLog),
@@ -142,12 +212,23 @@ class GameState {
         'requiredSuit': requiredSuit?.name,
         'requestedRank': requestedRank?.name,
         'requestedCardSuit': requestedCardSuit?.name,
+        'aceRequesterId': aceRequesterId,
         'questionSuit': questionSuit?.name,
+        'questionAnswerRank': questionAnswerRank?.name,
         'pendingDraw': pendingDraw,
+        'penaltyStarterId': penaltyStarterId,
         'clockwise': clockwise,
         'skipCount': skipCount,
+        'pendingJumpSkips': pendingJumpSkips,
+        'jumpInitiatorId': jumpInitiatorId,
+        'jumpExpiresAt': jumpExpiresAt?.toIso8601String(),
+        'pendingKickToggles': pendingKickToggles,
+        'kickInitiatorId': kickInitiatorId,
+        'kickExpiresAt': kickExpiresAt?.toIso8601String(),
         'maxPlayers': maxPlayers,
         'winnerUid': winnerUid,
+        'waitingForWinnerConfirmation': waitingForWinnerConfirmation,
+        'winnerConfirmations': winnerConfirmations,
         'nikoPending': nikoPending,
         'nikoDeclared': nikoDeclared,
         'eventLog': eventLog,
@@ -181,14 +262,31 @@ class GameState {
         requestedCardSuit: (json['requestedCardSuit'] as String?) == null
             ? null
             : Suit.values.firstWhere((e) => e.name == json['requestedCardSuit']),
+        aceRequesterId: json['aceRequesterId'] as String?,
         questionSuit: (json['questionSuit'] as String?) == null
             ? null
             : Suit.values.firstWhere((e) => e.name == json['questionSuit']),
+        questionAnswerRank: (json['questionAnswerRank'] as String?) == null
+            ? null
+            : Rank.values
+                .firstWhere((e) => e.name == json['questionAnswerRank']),
         pendingDraw: (json['pendingDraw'] ?? 0) as int,
+        penaltyStarterId: json['penaltyStarterId'] as String?,
         clockwise: (json['clockwise'] ?? true) as bool,
         skipCount: (json['skipCount'] ?? 0) as int,
+        pendingJumpSkips: (json['pendingJumpSkips'] ?? 0) as int,
+        jumpInitiatorId: json['jumpInitiatorId'] as String?,
+        jumpExpiresAt: DateTime.tryParse(json['jumpExpiresAt'] ?? ''),
+        pendingKickToggles: (json['pendingKickToggles'] ?? 0) as int,
+        kickInitiatorId: json['kickInitiatorId'] as String?,
+        kickExpiresAt: DateTime.tryParse(json['kickExpiresAt'] ?? ''),
         maxPlayers: (json['maxPlayers'] ?? 2) as int,
         winnerUid: json['winnerUid'] as String?,
+        waitingForWinnerConfirmation:
+            (json['waitingForWinnerConfirmation'] ?? false) as bool,
+        winnerConfirmations: (json['winnerConfirmations'] as List<dynamic>? ?? [])
+            .map((e) => e.toString())
+            .toList(),
         nikoPending: (json['nikoPending'] as List<dynamic>? ?? [])
             .map((e) => e.toString())
             .toList(),
@@ -200,7 +298,8 @@ class GameState {
             .toList(),
         requiredJokerColor: (json['requiredJokerColor'] as String?) == null
             ? null
-            : CardColor.values.firstWhere((e) => e.name == json['requiredJokerColor']),
+            : CardColor.values
+                .firstWhere((e) => e.name == json['requiredJokerColor']),
         comboOwnerId: json['comboOwnerId'] as String?,
         comboRank: (json['comboRank'] as String?) == null
             ? null
