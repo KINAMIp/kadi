@@ -392,13 +392,13 @@ class GameService {
         confirmations.add(playerId);
       }
       final allConfirmed = confirmations.length >= state.players.length;
-      final updatedLog = allConfirmed
-          ? (List<String>.from(state.eventLog)..add('Round complete.'))
-          : state.eventLog;
       room.state = state.copyWith(
         winnerConfirmations: confirmations,
         gameStatus: allConfirmed ? 'finished' : state.gameStatus,
-        eventLog: updatedLog,
+        eventLog: allConfirmed
+            ? List<String>.from(state.eventLog)
+              ..add('Round complete.')
+            : state.eventLog,
       );
       if (allConfirmed) {
         _cancelAllTimers(gameId);
