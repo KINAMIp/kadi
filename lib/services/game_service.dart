@@ -295,6 +295,8 @@ class GameService {
       if (playerIndex != state.turnIndex) {
         throw StateError('Not your turn to draw.');
       }
+      final requestActive =
+          state.requestedRank != null && state.requestedCardSuit != null;
       var drawCount = state.pendingDraw > 0 ? state.pendingDraw : 1;
       final drawPile = List<KadiCard>.from(state.drawPile);
       final discard = List<KadiCard>.from(state.discardPile);
@@ -308,14 +310,21 @@ class GameService {
       final player = players[playerIndex];
       players[playerIndex] =
           player.copyWith(hand: List<KadiCard>.from(player.hand)..addAll(drawnCards));
+      final message = state.pendingDraw > 0
+          ? '${player.name} picked $drawCount card${drawCount == 1 ? '' : 's'} from the penalty.'
+          : requestActive
+              ? '${player.name} could not answer the request and drew 1 card.'
+              : '${player.name} drew ${drawnCards.length} card${drawnCards.length == 1 ? '' : 's'}.';
       var nextState = state.copyWith(
         drawPile: drawPile,
         discardPile: discard,
         players: players,
         pendingDraw: 0,
         penaltyStarterId: null,
-        eventLog: List<String>.from(state.eventLog)
-          ..add('${player.name} drew ${drawnCards.length} card${drawnCards.length == 1 ? '' : 's'}.'),
+        requestedRank: null,
+        requestedCardSuit: null,
+        aceRequesterId: null,
+        eventLog: List<String>.from(state.eventLog)..add(message),
       );
       nextState = _advanceTurn(nextState);
       nextState = _refreshNikoFlags(nextState);
@@ -558,7 +567,7 @@ class GameService {
       );
     }
     final log = List<String>.from(state.eventLog)
-      ..add('${player.name} finished the round. Awaiting confirmation.');
+      ..add('${player.name} finished the round. Waiting for everyone to confirm the winning play.');
     return state.copyWith(
       winnerUid: player.uid,
       waitingForWinnerConfirmation: true,

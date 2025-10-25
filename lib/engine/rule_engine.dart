@@ -4,7 +4,7 @@ import '../models/game_state.dart';
 import '../models/kadi_card.dart';
 import '../models/kadi_player.dart';
 
-const Set<Rank> _ordinaryRanks = {
+const _ordinaryRanks = <Rank>{
   Rank.four,
   Rank.five,
   Rank.six,
@@ -13,18 +13,26 @@ const Set<Rank> _ordinaryRanks = {
   Rank.ten,
 };
 
-const Map<Suit, String> _suitSymbols = {
-  Suit.hearts: '♥',
-  Suit.diamonds: '♦',
+const _penaltyRanks = <Rank>{
+  Rank.two,
+  Rank.three,
+  Rank.joker,
+};
+
+const _suitGlyphs = <Suit, String>{
   Suit.clubs: '♣',
+  Suit.diamonds: '♦',
+  Suit.hearts: '♥',
   Suit.spades: '♠',
   Suit.joker: '🃏',
 };
 
-String _cardLabel(KadiCard card) {
-  final symbol = _suitSymbols[card.suit] ?? card.suit.name;
-  return '${card.rank.label}$symbol';
+String _describeCard(KadiCard card) {
+  final glyph = _suitGlyphs[card.suit] ?? card.suit.name;
+  return '${card.rank.label}$glyph';
 }
+
+String _describeSuit(Suit suit) => _suitGlyphs[suit] ?? suit.name;
 
 class AceRequest {
   final String requesterId;
@@ -53,12 +61,13 @@ class JumpWindow {
     String? initiatorId,
     int? skipCount,
     DateTime? expiresAt,
-  }) =>
-      JumpWindow(
-        initiatorId: initiatorId ?? this.initiatorId,
-        skipCount: skipCount ?? this.skipCount,
-        expiresAt: expiresAt ?? this.expiresAt,
-      );
+  }) {
+    return JumpWindow(
+      initiatorId: initiatorId ?? this.initiatorId,
+      skipCount: skipCount ?? this.skipCount,
+      expiresAt: expiresAt ?? this.expiresAt,
+    );
+  }
 }
 
 class KickWindow {
@@ -76,12 +85,13 @@ class KickWindow {
     String? initiatorId,
     int? toggleCount,
     DateTime? expiresAt,
-  }) =>
-      KickWindow(
-        initiatorId: initiatorId ?? this.initiatorId,
-        toggleCount: toggleCount ?? this.toggleCount,
-        expiresAt: expiresAt ?? this.expiresAt,
-      );
+  }) {
+    return KickWindow(
+      initiatorId: initiatorId ?? this.initiatorId,
+      toggleCount: toggleCount ?? this.toggleCount,
+      expiresAt: expiresAt ?? this.expiresAt,
+    );
+  }
 }
 
 class RuleState {
@@ -151,41 +161,46 @@ class RuleState {
   }
 
   factory RuleState.fromGame(GameState game) {
-    final aceRequest =
-        (game.requestedRank != null && game.requestedCardSuit != null)
-            ? AceRequest(
-                requesterId: game.aceRequesterId ?? '',
-                rank: game.requestedRank!,
-                suit: game.requestedCardSuit!,
-              )
-            : null;
-    final jumpWindow = (game.jumpInitiatorId != null &&
-            (game.pendingJumpSkips) > 0 &&
-            game.jumpExpiresAt != null)
-        ? JumpWindow(
-            initiatorId: game.jumpInitiatorId!,
-            skipCount: game.pendingJumpSkips,
-            expiresAt: game.jumpExpiresAt!,
-          )
-        : null;
-    final kickWindow = (game.kickInitiatorId != null &&
-            (game.pendingKickToggles) > 0 &&
-            game.kickExpiresAt != null)
-        ? KickWindow(
-            initiatorId: game.kickInitiatorId!,
-            toggleCount: game.pendingKickToggles,
-            expiresAt: game.kickExpiresAt!,
-          )
-        : null;
+    AceRequest? request;
+    if (game.requestedRank != null &&
+        game.requestedCardSuit != null &&
+        game.aceRequesterId != null &&
+        game.aceRequesterId!.isNotEmpty) {
+      request = AceRequest(
+        requesterId: game.aceRequesterId!,
+        rank: game.requestedRank!,
+        suit: game.requestedCardSuit!,
+      );
+    }
+    JumpWindow? jump;
+    if (game.jumpInitiatorId != null &&
+        game.jumpExpiresAt != null &&
+        game.pendingJumpSkips > 0) {
+      jump = JumpWindow(
+        initiatorId: game.jumpInitiatorId!,
+        skipCount: game.pendingJumpSkips,
+        expiresAt: game.jumpExpiresAt!,
+      );
+    }
+    KickWindow? kick;
+    if (game.kickInitiatorId != null &&
+        game.kickExpiresAt != null &&
+        game.pendingKickToggles > 0) {
+      kick = KickWindow(
+        initiatorId: game.kickInitiatorId!,
+        toggleCount: game.pendingKickToggles,
+        expiresAt: game.kickExpiresAt!,
+      );
+    }
     return RuleState(
       forcedSuit: game.requiredSuit,
-      aceRequest: aceRequest,
+      aceRequest: request,
       pendingDraw: game.pendingDraw,
       penaltyStarterId: game.penaltyStarterId,
       clockwise: game.clockwise,
       skipCount: game.skipCount,
-      jumpWindow: jumpWindow,
-      kickWindow: kickWindow,
+      jumpWindow: jump,
+      kickWindow: kick,
       nikoPending: game.nikoPending.toSet(),
       nikoDeclared: game.nikoDeclared.toSet(),
       waitingForWinnerConfirmation: game.waitingForWinnerConfirmation,
@@ -195,22 +210,27 @@ class RuleState {
   GameState apply(GameState game) {
     return game.copyWith(
       requiredSuit: forcedSuit,
-      requestedRank: aceRequest == null ? null : aceRequest!.rank,
-      requestedCardSuit: aceRequest == null ? null : aceRequest!.suit,
-      aceRequesterId: aceRequest == null ? null : aceRequest!.requesterId,
+      requestedRank: aceRequest?.rank,
+      requestedCardSuit: aceRequest?.suit,
+      aceRequesterId: aceRequest?.requesterId,
       pendingDraw: pendingDraw,
       penaltyStarterId: penaltyStarterId,
       clockwise: clockwise,
       skipCount: skipCount,
       pendingJumpSkips: jumpWindow?.skipCount ?? 0,
-      jumpInitiatorId: jumpWindow == null ? null : jumpWindow!.initiatorId,
+      jumpInitiatorId: jumpWindow?.initiatorId,
       jumpExpiresAt: jumpWindow?.expiresAt,
       pendingKickToggles: kickWindow?.toggleCount ?? 0,
-      kickInitiatorId: kickWindow == null ? null : kickWindow!.initiatorId,
+      kickInitiatorId: kickWindow?.initiatorId,
       kickExpiresAt: kickWindow?.expiresAt,
       nikoPending: nikoPending.toList(),
       nikoDeclared: nikoDeclared.toList(),
       waitingForWinnerConfirmation: waitingForWinnerConfirmation,
+      questionSuit: null,
+      questionAnswerRank: null,
+      requiredJokerColor: null,
+      comboOwnerId: null,
+      comboRank: null,
     );
   }
 }
@@ -225,27 +245,26 @@ class RuleOutcome {
   final bool startJumpTimer;
   final bool startKickTimer;
 
-  RuleOutcome._({
+  const RuleOutcome._({
     required this.isValid,
     required this.state,
     required this.timeline,
-    required this.reason,
-    required this.instruction,
-    required this.advanceTurn,
-    required this.startJumpTimer,
-    required this.startKickTimer,
+    this.reason,
+    this.instruction,
+    this.advanceTurn = true,
+    this.startJumpTimer = false,
+    this.startKickTimer = false,
   });
 
-  factory RuleOutcome.invalid(RuleState state, String reason) => RuleOutcome._(
-        isValid: false,
-        state: state,
-        timeline: const [],
-        reason: reason,
-        instruction: null,
-        advanceTurn: false,
-        startJumpTimer: false,
-        startKickTimer: false,
-      );
+  factory RuleOutcome.invalid(RuleState state, String reason) {
+    return RuleOutcome._(
+      isValid: false,
+      state: state,
+      timeline: const [],
+      reason: reason,
+      advanceTurn: false,
+    );
+  }
 
   factory RuleOutcome.valid({
     required RuleState state,
@@ -254,17 +273,17 @@ class RuleOutcome {
     bool advanceTurn = true,
     bool startJumpTimer = false,
     bool startKickTimer = false,
-  }) =>
-      RuleOutcome._(
-        isValid: true,
-        state: state,
-        timeline: timeline ?? const [],
-        reason: null,
-        instruction: instruction,
-        advanceTurn: advanceTurn,
-        startJumpTimer: startJumpTimer,
-        startKickTimer: startKickTimer,
-      );
+  }) {
+    return RuleOutcome._(
+      isValid: true,
+      state: state,
+      timeline: timeline ?? const [],
+      instruction: instruction,
+      advanceTurn: advanceTurn,
+      startJumpTimer: startJumpTimer,
+      startKickTimer: startKickTimer,
+    );
+  }
 }
 
 class RuleEngine {
@@ -279,95 +298,43 @@ class RuleEngine {
     if (cards.isEmpty) {
       return RuleOutcome.invalid(
         RuleState.fromGame(game),
-        'You must select at least one card.',
+        'Select at least one card.',
       );
     }
 
     final ruleState = RuleState.fromGame(game);
-    final first = cards.first;
 
     if (ruleState.waitingForWinnerConfirmation) {
       return RuleOutcome.invalid(
         ruleState,
-        'Round is awaiting confirmation of the winning move.',
+        'Round review in progress — wait for confirmations.',
       );
     }
 
-    // Jump/Kick cancel windows are handled separately.
-    if (ruleState.jumpWindow != null && DateTime.now().isBefore(ruleState.jumpWindow!.expiresAt)) {
-      // Only cancellation allowed
-      if (!first.isSkip) {
-        return RuleOutcome.invalid(
-          ruleState,
-          'Only a J may be played to cancel the jump during the timer.',
-        );
-      }
-      if (player.uid == ruleState.jumpWindow!.initiatorId) {
-        return RuleOutcome.invalid(
-          ruleState,
-          'You cannot cancel your own jump.',
-        );
-      }
-      if (cards.length != 1) {
-        return RuleOutcome.invalid(
-          ruleState,
-          'Play a single J to cancel the jump.',
-        );
-      }
-      final updated = ruleState.copyWith(
-        skipCount: 0,
-        jumpWindow: null,
-      );
-      return RuleOutcome.valid(
-        state: updated,
-        timeline: ['${player.name} canceled the jump.'],
-        instruction: 'Play continues from ${_cardLabel(first)}.',
-        advanceTurn: true,
-      );
+    final now = DateTime.now();
+    final top = game.discardPile.isNotEmpty
+        ? game.discardPile.last
+        : game.drawPile.last;
+
+    if (ruleState.jumpWindow != null && now.isBefore(ruleState.jumpWindow!.expiresAt)) {
+      return _handleJumpCancel(ruleState, player, cards);
+    }
+    if (ruleState.kickWindow != null && now.isBefore(ruleState.kickWindow!.expiresAt)) {
+      return _handleKickCancel(ruleState, player, cards);
     }
 
-    if (ruleState.kickWindow != null &&
-        DateTime.now().isBefore(ruleState.kickWindow!.expiresAt)) {
-      if (first.rank != Rank.king) {
-        return RuleOutcome.invalid(
-          ruleState,
-          'Only a K may be played to cancel the kickback during the timer.',
-        );
-      }
-      if (player.uid == ruleState.kickWindow!.initiatorId) {
-        return RuleOutcome.invalid(
-          ruleState,
-          'You cannot cancel your own kickback.',
-        );
-      }
-      if (cards.length != 1) {
-        return RuleOutcome.invalid(
-          ruleState,
-          'Play a single K to cancel the kickback.',
-        );
-      }
-      final updated = ruleState.copyWith(
-        kickWindow: null,
-      );
-      return RuleOutcome.valid(
-        state: updated,
-        timeline: ['${player.name} canceled the kickback.'],
-        instruction: 'Direction remains ${updated.clockwise ? 'clockwise' : 'counterclockwise'}.',
-        advanceTurn: true,
-      );
-    }
+    final first = cards.first;
 
-    // Ace request enforcement.
-    if (ruleState.aceRequest != null) {
-      final request = ruleState.aceRequest!;
-      final bool matchesRequest =
-          first.rank == request.rank && first.suit == request.suit;
-      final bool cancelsWithAce = first.rank == Rank.ace && !first.isAceOfSpades;
-      final bool playsCommander = first.isAceOfSpades;
-      if (!matchesRequest && !cancelsWithAce && !playsCommander) {
+    final forcedRequest = ruleState.aceRequest;
+    if (forcedRequest != null) {
+      final isRequiredPlayer = player.uid != forcedRequest.requesterId;
+      final matchesRequest =
+          first.rank == forcedRequest.rank && first.suit == forcedRequest.suit;
+      final cancelsWithAce = first.rank == Rank.ace;
+      if (isRequiredPlayer && !matchesRequest && !cancelsWithAce) {
         return RuleOutcome.invalid(
           ruleState,
-          'You must answer the request with ${request.rank.label}${_suitSymbols[request.suit]} or cancel it with an Ace.',
+          'Play ${forcedRequest.rank.label}${_describeSuit(forcedRequest.suit)} or cancel with an Ace.',
         );
       }
     }
@@ -375,7 +342,7 @@ class RuleEngine {
     if (ruleState.pendingDraw > 0 && !first.isPenaltyCard && !first.isAce) {
       return RuleOutcome.invalid(
         ruleState,
-        'You must continue the penalty with another 2/3/Joker or cancel it with an Ace.',
+        'Continue the penalty with 2, 3, or Joker or cancel it with an Ace.',
       );
     }
 
@@ -386,72 +353,72 @@ class RuleEngine {
       return _handleOtherAce(ruleState, player, cards);
     }
     if (first.isPenaltyCard) {
-      return _handlePenalty(ruleState, player, cards, game.top);
+      return _handlePenalty(ruleState, player, cards, top);
     }
     if (first.isQuestionCard) {
-      return _handleQuestion(ruleState, player, cards, game.top);
+      return _handleQuestion(ruleState, player, cards, top);
     }
     if (first.isSkip) {
-      return _handleJump(ruleState, player, cards, game.top);
+      return _handleJump(ruleState, player, cards, top);
     }
     if (first.rank == Rank.king) {
-      return _handleKick(ruleState, player, cards, game.top);
+      return _handleKick(ruleState, player, cards, top);
     }
-    return _handleOrdinary(ruleState, player, cards, game.top);
+    return _handleOrdinary(ruleState, player, cards, top);
   }
 
   RuleOutcome applyJumpExpiry(GameState game) {
-    final ruleState = RuleState.fromGame(game);
-    final window = ruleState.jumpWindow;
+    final state = RuleState.fromGame(game);
+    final window = state.jumpWindow;
     if (window == null) {
-      return RuleOutcome.invalid(ruleState, 'No jump is pending.');
+      return RuleOutcome.invalid(state, 'No jump pending.');
     }
     if (DateTime.now().isBefore(window.expiresAt)) {
-      return RuleOutcome.invalid(ruleState, 'Jump cancel window is still active.');
+      return RuleOutcome.invalid(state, 'Jump cancel window still active.');
     }
-    final updated = ruleState.copyWith(
+    final updated = state.copyWith(
       skipCount: window.skipCount,
       jumpWindow: null,
     );
-    final timeline = [
-      'Jump stands: skipping ${window.skipCount} player${window.skipCount == 1 ? '' : 's'}.',
-    ];
+    final count = window.skipCount;
     return RuleOutcome.valid(
       state: updated,
-      timeline: timeline,
-      instruction: 'Skip ${window.skipCount} player${window.skipCount == 1 ? '' : 's'} then continue.',
+      timeline: [
+        'Jump stands – skipping $count ${count == 1 ? 'person' : 'people'}.',
+      ],
+      instruction: 'Skip $count ${count == 1 ? 'player' : 'players'} then play.',
       advanceTurn: true,
     );
   }
 
   RuleOutcome applyKickExpiry(GameState game) {
-    final ruleState = RuleState.fromGame(game);
-    final window = ruleState.kickWindow;
+    final state = RuleState.fromGame(game);
+    final window = state.kickWindow;
     if (window == null) {
-      return RuleOutcome.invalid(ruleState, 'No kickback is pending.');
+      return RuleOutcome.invalid(state, 'No kickback pending.');
     }
     if (DateTime.now().isBefore(window.expiresAt)) {
-      return RuleOutcome.invalid(ruleState, 'Kickback cancel window is still active.');
+      return RuleOutcome.invalid(state, 'Kickback cancel window still active.');
     }
-    var direction = ruleState.clockwise;
+    var direction = state.clockwise;
     for (var i = 0; i < window.toggleCount; i++) {
       direction = !direction;
     }
-    final updated = ruleState.copyWith(
+    final updated = state.copyWith(
       clockwise: direction,
       kickWindow: null,
     );
-    final timeline = [
-      window.toggleCount % 2 == 0
-          ? 'Kickback resolved with no net reversal.'
-          : 'Direction is now ${direction ? 'clockwise' : 'counterclockwise'}.',
-    ];
+    final toggles = window.toggleCount;
+    final descriptor = direction ? 'clockwise' : 'counterclockwise';
+    final outcomeDescription = toggles.isOdd
+        ? 'direction reversed'
+        : 'direction unchanged';
     return RuleOutcome.valid(
       state: updated,
-      timeline: timeline,
-      instruction: window.toggleCount % 2 == 0
-          ? 'Play direction is unchanged.'
-          : 'Play direction reversed to ${direction ? 'clockwise' : 'counterclockwise'}.',
+      timeline: [
+        'Kickback stands – $outcomeDescription.',
+      ],
+      instruction: 'Play continues $descriptor.',
       advanceTurn: true,
     );
   }
@@ -461,12 +428,64 @@ class RuleEngine {
     return hand.every((card) => _ordinaryRanks.contains(card.rank));
   }
 
-  static bool requestedCardSatisfied(GameState state, KadiCard card) {
-    if (state.requestedRank == null || state.requestedCardSuit == null) {
-      return false;
+  RuleOutcome _handleJumpCancel(
+    RuleState state,
+    KadiPlayer player,
+    List<KadiCard> cards,
+  ) {
+    final window = state.jumpWindow!;
+    if (cards.length != 1 || !cards.first.isSkip) {
+      return RuleOutcome.invalid(
+        state,
+        'Only a single J may cancel the jump.',
+      );
     }
-    return card.rank == state.requestedRank &&
-        card.suit == state.requestedCardSuit;
+    if (player.uid == window.initiatorId) {
+      return RuleOutcome.invalid(
+        state,
+        'You cannot cancel your own jump.',
+      );
+    }
+    final updated = state.copyWith(
+      jumpWindow: null,
+      skipCount: 0,
+    );
+    return RuleOutcome.valid(
+      state: updated,
+      timeline: ['${player.name} canceled the jump.'],
+      instruction: 'Play continues from ${_describeCard(cards.first)}.',
+      advanceTurn: true,
+    );
+  }
+
+  RuleOutcome _handleKickCancel(
+    RuleState state,
+    KadiPlayer player,
+    List<KadiCard> cards,
+  ) {
+    final window = state.kickWindow!;
+    if (cards.length != 1 || cards.first.rank != Rank.king) {
+      return RuleOutcome.invalid(
+        state,
+        'Only a single K may cancel the kickback.',
+      );
+    }
+    if (player.uid == window.initiatorId) {
+      return RuleOutcome.invalid(
+        state,
+        'You cannot cancel your own kickback.',
+      );
+    }
+    final updated = state.copyWith(
+      kickWindow: null,
+    );
+    final descriptor = state.clockwise ? 'clockwise' : 'counterclockwise';
+    return RuleOutcome.valid(
+      state: updated,
+      timeline: ['${player.name} canceled the kickback.'],
+      instruction: 'Direction stays $descriptor.',
+      advanceTurn: true,
+    );
   }
 
   RuleOutcome _handleAceOfSpades(
@@ -476,34 +495,31 @@ class RuleEngine {
     AceRequest? request,
   ) {
     if (cards.length != 1) {
-      return RuleOutcome.invalid(
-        state,
-        'Ace of Spades must be played alone.',
-      );
+      return RuleOutcome.invalid(state, 'A♠ must be played alone.');
     }
     if (request == null) {
       return RuleOutcome.invalid(
         state,
-        'You must declare the rank and suit for the request.',
+        'Declare the exact card for the Ace of Spades.',
       );
     }
     final updated = state.copyWith(
-      forcedSuit: null,
-      aceRequest: request,
       pendingDraw: 0,
       penaltyStarterId: null,
-      skipCount: 0,
+      forcedSuit: null,
+      aceRequest: AceRequest(
+        requesterId: player.uid,
+        rank: request.rank,
+        suit: request.suit,
+      ),
     );
-    final requestedLabel = '${request.rank.label}${_suitSymbols[request.suit]}';
-    final timeline = [
-      '${player.name} requested $requestedLabel.',
-    ];
-    final instruction =
-        'Next player must play $requestedLabel or draw 1 card.';
+    final label = '${request.rank.label}${_describeSuit(request.suit)}';
     return RuleOutcome.valid(
       state: updated,
-      timeline: timeline,
-      instruction: instruction,
+      timeline: [
+        '${player.name} canceled penalties with A♠ and requested $label.',
+      ],
+      instruction: 'Next player must play $label or draw 1 card.',
     );
   }
 
@@ -513,47 +529,33 @@ class RuleEngine {
     List<KadiCard> cards,
   ) {
     if (cards.length != 1) {
-      return RuleOutcome.invalid(
-        state,
-        'Aces cannot be combined with other cards.',
-      );
+      return RuleOutcome.invalid(state, 'Aces cannot be combined.');
     }
     final card = cards.first;
-    if (state.pendingDraw > 0) {
-      final updated = state.copyWith(
-        pendingDraw: 0,
-        penaltyStarterId: null,
-        forcedSuit: null,
-        aceRequest: null,
-      );
-      return RuleOutcome.valid(
-        state: updated,
-        timeline: ['${player.name} canceled the penalty.'],
-        instruction:
-            'Play resumes from ${_suitSymbols[card.suit]} — match the suit or play another Ace.',
-      );
-    }
-    if (state.aceRequest != null) {
-      final updated = state.copyWith(
-        aceRequest: null,
-        forcedSuit: card.suit,
-      );
-      return RuleOutcome.valid(
-        state: updated,
-        timeline: ['${player.name} canceled the request and changed suit to ${_suitSymbols[card.suit]}.'],
-        instruction:
-            'Next player must follow suit ${_suitSymbols[card.suit]} or play an Ace.',
-      );
-    }
+    final clearsPenalty = state.pendingDraw > 0;
+    final clearsRequest = state.aceRequest != null;
     final updated = state.copyWith(
+      pendingDraw: 0,
+      penaltyStarterId: null,
       forcedSuit: card.suit,
       aceRequest: null,
     );
+    final timeline = <String>[];
+    if (clearsPenalty) {
+      timeline.add('${player.name} canceled the penalty.');
+    }
+    if (clearsRequest) {
+      timeline.add('${player.name} canceled the request.');
+    }
+    if (timeline.isEmpty) {
+      timeline.add('${player.name} changed suit to ${_describeSuit(card.suit)}.');
+    } else {
+      timeline.add('${player.name} set play to ${_describeSuit(card.suit)}.');
+    }
     return RuleOutcome.valid(
       state: updated,
-      timeline: ['${player.name} changed suit to ${_suitSymbols[card.suit]}.'],
-      instruction:
-          'Next player must follow suit ${_suitSymbols[card.suit]} or play an Ace.',
+      timeline: timeline,
+      instruction: 'Next player must follow ${_describeSuit(card.suit)} or play an Ace.',
     );
   }
 
@@ -563,13 +565,10 @@ class RuleEngine {
     List<KadiCard> cards,
     KadiCard top,
   ) {
-    if (_containsQuestion(cards) || cards.any((c) => c.isAce)) {
-      return RuleOutcome.invalid(state, 'Penalty chains may only contain 2s, 3s, and Jokers.');
-    }
-    if (!_validPenaltySequence(top, state.forcedSuit, cards)) {
+    if (!_validPenaltySequence(state, top, cards)) {
       return RuleOutcome.invalid(
         state,
-        'Penalty cards must match by suit, rank, or joker color.',
+        'Penalty cards must match by suit, rank, or joker colour.',
       );
     }
     var total = state.pendingDraw;
@@ -582,15 +581,13 @@ class RuleEngine {
       forcedSuit: null,
       aceRequest: null,
     );
-    final timeline = [
-      '${player.name} stacked penalty to +$total.',
-    ];
-    final instruction =
-        'Next player must continue the penalty or draw $total card${total == 1 ? '' : 's'}.';
     return RuleOutcome.valid(
       state: updated,
-      timeline: timeline,
-      instruction: instruction,
+      timeline: [
+        '${player.name} stacked penalty to +$total.',
+      ],
+      instruction:
+          'Next player must add to the penalty or draw $total ${total == 1 ? 'card' : 'cards'}.',
     );
   }
 
@@ -603,12 +600,14 @@ class RuleEngine {
     if (state.pendingDraw > 0) {
       return RuleOutcome.invalid(
         state,
-        'Resolve the penalty before asking a question.',
+        'Resolve penalties before asking questions.',
       );
     }
+    final queue = Queue<KadiCard>.of(cards);
     final questions = <KadiCard>[];
     final answers = <KadiCard>[];
-    for (final card in cards) {
+    while (queue.isNotEmpty) {
+      final card = queue.removeFirst();
       if (card.isQuestionCard && answers.isEmpty) {
         questions.add(card);
       } else {
@@ -618,20 +617,20 @@ class RuleEngine {
     if (questions.isEmpty || answers.isEmpty) {
       return RuleOutcome.invalid(
         state,
-        'Question cards must be followed by answer cards in the same play.',
+        'Question cards must be followed by answers in the same play.',
+      );
+    }
+    if (!_allSameRank(questions)) {
+      return RuleOutcome.invalid(
+        state,
+        'Combine questions of the same rank only.',
       );
     }
     final firstQuestion = questions.first;
     if (!_matchesTop(firstQuestion, top, state.forcedSuit)) {
       return RuleOutcome.invalid(
         state,
-        'The first question card must match the pile by suit or rank.',
-      );
-    }
-    if (!_allSameRank(questions)) {
-      return RuleOutcome.invalid(
-        state,
-        'Combined question cards must share the same rank.',
+        'First question must match pile by suit or rank.',
       );
     }
     final firstAnswer = answers.first;
@@ -641,24 +640,24 @@ class RuleEngine {
         'Answers must be ordinary cards.',
       );
     }
+    if (firstAnswer.suit != questions.last.suit) {
+      return RuleOutcome.invalid(
+        state,
+        'First answer must follow the suit of the last question.',
+      );
+    }
     if (!_allSameRank(answers)) {
       return RuleOutcome.invalid(
         state,
         'All answers must share the same rank.',
       );
     }
-    final requiredSuit = questions.last.suit;
-    if (firstAnswer.suit != requiredSuit) {
-      return RuleOutcome.invalid(
-        state,
-        'The first answer must follow the suit of the final question card.',
-      );
-    }
-    for (final card in answers.skip(1)) {
-      if (!_ordinaryRanks.contains(card.rank) || card.rank != firstAnswer.rank) {
+    final answerRank = answers.first.rank;
+    for (final card in answers) {
+      if (!_ordinaryRanks.contains(card.rank) || card.rank != answerRank) {
         return RuleOutcome.invalid(
           state,
-          'All answers must repeat the same ordinary rank.',
+          'Answers must repeat the chosen ordinary rank.',
         );
       }
     }
@@ -666,14 +665,13 @@ class RuleEngine {
       forcedSuit: null,
       aceRequest: null,
     );
-    final questionLabel = questions.map(_cardLabel).join(', ');
-    final answerLabel = answers.map(_cardLabel).join(', ');
-    final timeline = [
-      '${player.name} asked with $questionLabel and answered $answerLabel.',
-    ];
+    final questionLabel = questions.map(_describeCard).join(', ');
+    final answerLabel = answers.map(_describeCard).join(', ');
     return RuleOutcome.valid(
       state: updated,
-      timeline: timeline,
+      timeline: [
+        '${player.name} played $questionLabel and answered with $answerLabel.',
+      ],
       instruction: null,
     );
   }
@@ -687,19 +685,19 @@ class RuleEngine {
     if (state.pendingDraw > 0) {
       return RuleOutcome.invalid(
         state,
-        'Settle the penalty chain before jumping.',
+        'Finish the penalty chain before jumping.',
+      );
+    }
+    if (cards.any((card) => !card.isSkip)) {
+      return RuleOutcome.invalid(
+        state,
+        'Jump combos may only contain Js.',
       );
     }
     if (!_matchesTop(cards.first, top, state.forcedSuit)) {
       return RuleOutcome.invalid(
         state,
         'J must match the pile by suit or rank.',
-      );
-    }
-    if (cards.any((card) => card.rank != Rank.jack)) {
-      return RuleOutcome.invalid(
-        state,
-        'Jump combos may only contain Js.',
       );
     }
     final skipCount = cards.length;
@@ -714,12 +712,11 @@ class RuleEngine {
       forcedSuit: null,
       aceRequest: null,
     );
-    final timeline = [
-      '${player.name} jumped $skipCount player${skipCount == 1 ? '' : 's'}.',
-    ];
     return RuleOutcome.valid(
       state: updated,
-      timeline: timeline,
+      timeline: [
+        '${player.name} jumped $skipCount ${skipCount == 1 ? 'person' : 'people'}.',
+      ],
       instruction: 'Any player may cancel with a J within 10 seconds.',
       advanceTurn: false,
       startJumpTimer: true,
@@ -735,19 +732,19 @@ class RuleEngine {
     if (state.pendingDraw > 0) {
       return RuleOutcome.invalid(
         state,
-        'Settle the penalty chain before reversing direction.',
-      );
-    }
-    if (!_matchesTop(cards.first, top, state.forcedSuit)) {
-      return RuleOutcome.invalid(
-        state,
-        'K must match the pile by suit or rank.',
+        'Finish the penalty chain before reversing direction.',
       );
     }
     if (cards.any((card) => card.rank != Rank.king)) {
       return RuleOutcome.invalid(
         state,
         'Kickback combos may only contain Ks.',
+      );
+    }
+    if (!_matchesTop(cards.first, top, state.forcedSuit)) {
+      return RuleOutcome.invalid(
+        state,
+        'K must match the pile by suit or rank.',
       );
     }
     final toggles = cards.length;
@@ -761,12 +758,13 @@ class RuleEngine {
       forcedSuit: null,
       aceRequest: null,
     );
-    final timeline = [
-      '${player.name} kicked back $toggles time${toggles == 1 ? '' : 's'}.',
-    ];
+    final countLabel =
+        '$toggles ${toggles == 1 ? 'time' : 'times'}';
     return RuleOutcome.valid(
       state: updated,
-      timeline: timeline,
+      timeline: [
+        '${player.name} triggered a kickback $countLabel.',
+      ],
       instruction: 'Any player may cancel with a K within 10 seconds.',
       advanceTurn: false,
       startKickTimer: true,
@@ -779,12 +777,6 @@ class RuleEngine {
     List<KadiCard> cards,
     KadiCard top,
   ) {
-    if (!_ordinaryRanks.contains(cards.first.rank)) {
-      return RuleOutcome.invalid(
-        state,
-        'Play must follow the pile by suit or rank.',
-      );
-    }
     if (!_matchesTop(cards.first, top, state.forcedSuit)) {
       return RuleOutcome.invalid(
         state,
@@ -801,7 +793,7 @@ class RuleEngine {
       if (!_ordinaryRanks.contains(card.rank)) {
         return RuleOutcome.invalid(
           state,
-          'Only 4, 5, 6, 7, 9, and 10 may be played as ordinary cards.',
+          'Use ranks 4,5,6,7,9,10 for ordinary plays.',
         );
       }
     }
@@ -816,13 +808,70 @@ class RuleEngine {
     );
   }
 
+  bool _validPenaltySequence(
+    RuleState state,
+    KadiCard top,
+    List<KadiCard> cards,
+  ) {
+    if (cards.any((card) => !_penaltyRanks.contains(card.rank))) {
+      return false;
+    }
+    final sequence = Queue<KadiCard>.of(cards);
+    var reference = top;
+    var forcedSuit = state.forcedSuit;
+    while (sequence.isNotEmpty) {
+      final card = sequence.removeFirst();
+      if (!_penaltyMatches(card, reference, forcedSuit)) {
+        return false;
+      }
+      reference = card;
+      forcedSuit = null;
+    }
+    return true;
+  }
+
+  bool _penaltyMatches(KadiCard card, KadiCard reference, Suit? forcedSuit) {
+    if (forcedSuit != null) {
+      if (card.isJoker) {
+        return _jokerMatchesSuit(card.color, forcedSuit);
+      }
+      return card.suit == forcedSuit;
+    }
+    if (reference.isJoker) {
+      if (card.isJoker) {
+        return card.color == reference.color;
+      }
+      return _jokerMatchesSuit(reference.color, card.suit);
+    }
+    if (card.isJoker) {
+      return _jokerMatchesSuit(card.color, reference.suit);
+    }
+    return card.rank == reference.rank || card.suit == reference.suit;
+  }
+
+  bool _jokerMatchesSuit(CardColor color, Suit suit) {
+    switch (suit) {
+      case Suit.hearts:
+      case Suit.diamonds:
+        return color == CardColor.red;
+      case Suit.clubs:
+      case Suit.spades:
+        return color == CardColor.black;
+      case Suit.joker:
+        return true;
+    }
+  }
+
   bool _matchesTop(KadiCard card, KadiCard top, Suit? forcedSuit) {
     if (forcedSuit != null) {
+      if (card.isJoker) {
+        return _jokerMatchesSuit(card.color, forcedSuit);
+      }
       return card.suit == forcedSuit || card.rank == Rank.ace;
     }
     if (card.isJoker) return true;
     if (top.isJoker) {
-      return card.color == top.color || card.rank == top.rank;
+      return _jokerMatchesSuit(card.color, top.suit) || card.rank == top.rank;
     }
     return card.suit == top.suit || card.rank == top.rank;
   }
@@ -831,60 +880,5 @@ class RuleEngine {
     if (cards.isEmpty) return true;
     final rank = cards.first.rank;
     return cards.every((card) => card.rank == rank);
-  }
-
-  bool _containsQuestion(List<KadiCard> cards) {
-    return cards.any((card) => card.isQuestionCard);
-  }
-
-  bool _validPenaltySequence(
-    KadiCard top,
-    Suit? forcedSuit,
-    List<KadiCard> cards,
-  ) {
-    final sequence = Queue<KadiCard>.from(cards);
-    final first = sequence.removeFirst();
-    if (!_penaltyMatches(first, top, forcedSuit)) {
-      return false;
-    }
-    var previous = first;
-    while (sequence.isNotEmpty) {
-      final card = sequence.removeFirst();
-      if (!_penaltyMatches(card, previous, null)) {
-        return false;
-      }
-      previous = card;
-    }
-    return true;
-  }
-
-  bool _penaltyMatches(KadiCard card, KadiCard reference, Suit? forcedSuit) {
-    if (!card.isPenaltyCard) return false;
-    if (forcedSuit != null) {
-      if (card.isJoker) {
-        return _colorMatchesSuit(card.color, forcedSuit);
-      }
-      return card.suit == forcedSuit;
-    }
-    if (reference.isJoker) {
-      if (card.isJoker) {
-        return card.color == reference.color;
-      }
-      return card.color == reference.color;
-    }
-    if (card.isJoker) {
-      return _colorMatchesSuit(card.color, reference.suit);
-    }
-    return card.rank == reference.rank || card.suit == reference.suit;
-  }
-
-  bool _colorMatchesSuit(CardColor color, Suit suit) {
-    if (suit == Suit.hearts || suit == Suit.diamonds) {
-      return color == CardColor.red;
-    }
-    if (suit == Suit.spades || suit == Suit.clubs) {
-      return color == CardColor.black;
-    }
-    return true;
   }
 }
