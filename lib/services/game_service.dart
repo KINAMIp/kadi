@@ -396,8 +396,8 @@ class GameService {
         winnerConfirmations: confirmations,
         gameStatus: allConfirmed ? 'finished' : state.gameStatus,
         eventLog: allConfirmed
-            ? List<String>.from(state.eventLog)
-              ..add('Round complete.')
+            ? (List<String>.from(state.eventLog)
+              ..add('Round complete.'))
             : state.eventLog,
       );
       if (allConfirmed) {
